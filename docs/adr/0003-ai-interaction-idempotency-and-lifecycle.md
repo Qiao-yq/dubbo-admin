@@ -30,3 +30,29 @@ Accepted for Issue #1539 Phase 1, PR 3.
 ## Consequences
 
 The HTTP layer owns request-key validation and canonical hashing. Stores own atomic idempotency, concurrency, quota, and deletion decisions. The Agent consumes a prepared Interaction and reports its terminal state; it does not invent production Interaction IDs.
+
+## Breaking change and migration
+
+`Idempotency-Key` is intentionally mandatory for `POST /api/v1/ai/chat/stream`.
+Existing scripts and integrations must add it; missing or invalid keys return
+HTTP 400 with `IDEMPOTENCY_KEY_REQUIRED`. There is no non-idempotent fallback.
+Create a Session first and send its ID in the JSON body's `sessionID` field.
+Generate a new key for each new logical message, and preserve that key and the
+original request body across network retries. For example:
+
+```sh
+curl -N "$AI_BASE_URL/api/v1/ai/chat/stream" \
+  -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: example-logical-request-1' \
+  --data '{"sessionID":"existing-session-id","message":"Inspect this application"}'
+```
+
+Use the authentication required by the deployment. A changed message requires a
+new key; reusing a key with changed request content returns HTTP 409
+`IDEMPOTENCY_CONFLICT`. A retry returns HTTP 409 while its original interaction
+is still running, and replays the saved result after completion.
+
+Quota limits remain finite. External configuration requires positive values
+(`max_turns` controls Turns per Session); omitted values receive defaults.
+Explicit zero is invalid configuration, not an unlimited setting. Direct Go
+Store construction uses non-positive policy fields as default-value sentinels.

@@ -769,6 +769,9 @@ func (m *MemoryStore) PrepareInteraction(ctx context.Context, access security.Ac
 		if interaction.Status == conversationstore.InteractionStatusRunning && interaction.LeaseExpiresAt.After(now) {
 			return nil, conversationstore.ErrInteractionInProgress
 		}
+		if err := m.releaseExpiredInteractionLocked(sessionID, interaction.ID, now); err != nil {
+			return nil, err
+		}
 		history := m.ensureHistoryLocked(sessionID)
 		if len(history.history) >= m.limit {
 			return nil, conversationstore.ErrResourceExhausted
@@ -794,18 +797,8 @@ func (m *MemoryStore) PrepareInteraction(ctx context.Context, access security.Ac
 		m.activeInteractions[sessionID] = interaction.ID
 		return &conversationstore.PreparedInteraction{InteractionID: interaction.ID, TurnID: interaction.TurnID}, nil
 	}
-	if activeID := m.activeInteractions[sessionID]; activeID != "" {
-		active := m.interactions[activeID]
-		if active.Status == conversationstore.InteractionStatusRunning && active.LeaseExpiresAt.After(now) {
-			return nil, conversationstore.ErrSessionBusy
-		}
-		if history := m.history[sessionID]; history != nil {
-			delete(history.active, active.TurnID)
-		}
-		active.Status = conversationstore.InteractionStatusFailed
-		active.UpdatedAt = now
-		m.interactions[activeID] = active
-		delete(m.activeInteractions, sessionID)
+	if err := m.releaseExpiredInteractionLocked(sessionID, "", now); err != nil {
+		return nil, err
 	}
 	history := m.ensureHistoryLocked(sessionID)
 	if len(history.history) >= m.limit {
@@ -826,6 +819,27 @@ func (m *MemoryStore) PrepareInteraction(ctx context.Context, access security.Ac
 	m.idempotency[lookup] = interaction.ID
 	m.activeInteractions[sessionID] = interaction.ID
 	return &conversationstore.PreparedInteraction{InteractionID: interaction.ID, TurnID: interaction.TurnID}, nil
+}
+
+// releaseExpiredInteractionLocked guards both new requests and retries. The
+// caller replaces its own expired Turn; only a different holder is reclaimed here.
+func (m *MemoryStore) releaseExpiredInteractionLocked(sessionID, retryID string, now time.Time) error {
+	activeID := m.activeInteractions[sessionID]
+	if activeID == "" || activeID == retryID {
+		return nil
+	}
+	active := m.interactions[activeID]
+	if active.Status == conversationstore.InteractionStatusRunning && active.LeaseExpiresAt.After(now) {
+		return conversationstore.ErrSessionBusy
+	}
+	if history := m.history[sessionID]; history != nil {
+		delete(history.active, active.TurnID)
+	}
+	active.Status = conversationstore.InteractionStatusFailed
+	active.UpdatedAt = now
+	m.interactions[activeID] = active
+	delete(m.activeInteractions, sessionID)
+	return nil
 }
 
 func (m *MemoryStore) CompleteInteraction(ctx context.Context, access security.AccessContext, sessionID, interactionID string, turnID uint64, result string) error {

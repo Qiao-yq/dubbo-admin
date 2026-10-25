@@ -114,7 +114,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch, onMounted, nextTick } from 'vue'
+import { computed, ref, shallowRef, watch, onMounted, nextTick } from 'vue'
 import { message } from 'ant-design-vue'
 import MarkdownIt from 'markdown-it'
 import hljs from 'highlight.js'
@@ -162,6 +162,7 @@ const props = withDefaults(
   defineProps<{
     open?: boolean
     service: ChatService<unknown>
+    // Must return JSON-serializable data; the drawer snapshots it for retries.
     collectContext?: () => unknown
     labels?: Partial<AIChatLabels>
     suggestions?: ChatSuggestion[]
@@ -200,7 +201,7 @@ const sessions = ref<Session[]>([])
 const historyModalVisible = ref(false)
 
 const lastUserMessage = ref<string>('') // 保存最后一次用户消息用于重试
-const lastRequestContext = ref<unknown>()
+const lastRequestContext = shallowRef<unknown>()
 const lastIdempotencyKey = ref('')
 const usageInfo = ref<any>(null) // 保存使用情况信息
 
@@ -348,7 +349,17 @@ async function sendMessage(isRetry = false) {
 
   if (!inputMsg.trim() || isLoading.value) return
 
-  const context = isRetry ? lastRequestContext.value : props.collectContext?.()
+  // Snapshot the JSON payload once so later page-state mutations cannot change
+  // the request associated with the same idempotency key. JSON also handles
+  // reactive context objects without passing Vue proxies to structuredClone.
+  let context: unknown
+  try {
+    const collected = isRetry ? lastRequestContext.value : props.collectContext?.()
+    context = isRetry || collected === undefined ? collected : JSON.parse(JSON.stringify(collected))
+  } catch {
+    addErrorMessage(resolvedLabels.value.requestFailed)
+    return
+  }
   const idempotencyKey = isRetry ? lastIdempotencyKey.value : crypto.randomUUID()
 
   if (!idempotencyKey) {
