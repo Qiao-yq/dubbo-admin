@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-import { defineComponent, h, ref } from 'vue'
+import { defineComponent, h, reactive, ref } from 'vue'
 import { flushPromises, mount } from '@vue/test-utils'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import AiChatDrawer from '../AiChatDrawer.vue'
@@ -155,7 +155,7 @@ describe('AiChatDrawer', () => {
   })
 
   it('reuses the logical request key and context snapshot when retrying', async () => {
-    const firstContext = { page: 'instances', version: 1 }
+    const firstContext = reactive({ page: 'instances', selection: { version: 1 } })
     const collectContext = vi.fn(() => firstContext)
     const service: ChatService<unknown> = {
       createSession: vi.fn().mockResolvedValue('session-1'),
@@ -171,6 +171,9 @@ describe('AiChatDrawer', () => {
 
     await input.find('.send-message').trigger('click')
     await flushPromises()
+    const originalUserMessage = wrapper.findComponent(MessageListStub).props('messages')[0]
+    firstContext.page = 'services'
+    firstContext.selection.version = 2
     await wrapper.find('.retry-message').trigger('click')
     await flushPromises()
 
@@ -179,11 +182,13 @@ describe('AiChatDrawer', () => {
     const retryCall = vi.mocked(service.sendChatMessage).mock.calls[1]
     expect(retryCall[0]).toBe(firstCall[0])
     expect(retryCall[1]).toBe(firstCall[1])
-    expect(retryCall[2]).toBe(firstCall[2])
+    expect(firstCall[2]).toEqual({ page: 'instances', selection: { version: 1 } })
+    expect(retryCall[2]).toEqual({ page: 'instances', selection: { version: 1 } })
     expect(retryCall[3]).toBe(firstCall[3])
     expect(collectContext).toHaveBeenCalledOnce()
     const renderedMessages = wrapper.findComponent(MessageListStub).props('messages') as Array<{ role: string }>
     expect(renderedMessages).toHaveLength(2)
+    expect(renderedMessages[0]).toBe(originalUserMessage)
     expect(renderedMessages.map((item) => item.role)).toEqual(['user', 'assistant'])
   })
 

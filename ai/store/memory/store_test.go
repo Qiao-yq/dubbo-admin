@@ -19,6 +19,7 @@ package memory
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"testing"
 	"time"
@@ -28,6 +29,36 @@ import (
 
 	"github.com/firebase/genkit/go/ai"
 )
+
+func TestBlockedRetryPreservesInteractionRecords(t *testing.T) {
+	s := NewMemoryStore()
+	ctx := context.Background()
+	access := security.MustAccessContext(security.Subject{TenantID: "tenant", UserID: "owner", AuthMethod: security.AuthMethodStatic})
+	now := time.Now()
+	session := &conversationstore.Session{ID: "blocked-retry", TenantID: "tenant", OwnerID: "owner", Version: 1, CreatedAt: now, UpdatedAt: now, Status: conversationstore.SessionStatusActive}
+	if err := s.Create(ctx, access, session); err != nil {
+		t.Fatal(err)
+	}
+	a, err := s.PrepareInteraction(ctx, access, session.ID, "A", "hash-A", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.FailInteraction(ctx, access, session.ID, a.InteractionID, a.TurnID); err != nil {
+		t.Fatal(err)
+	}
+	b, err := s.PrepareInteraction(ctx, access, session.ID, "B", "hash-B", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeA, beforeB := s.interactions[a.InteractionID], s.interactions[b.InteractionID]
+	nextTurnID := s.history[session.ID].nextID
+	if _, err := s.PrepareInteraction(ctx, access, session.ID, "A", "hash-A", time.Minute); !errors.Is(err, conversationstore.ErrSessionBusy) {
+		t.Fatalf("retry error = %v, want ErrSessionBusy", err)
+	}
+	if s.interactions[a.InteractionID] != beforeA || s.interactions[b.InteractionID] != beforeB || s.activeInteractions[session.ID] != b.InteractionID || s.history[session.ID].nextID != nextTurnID {
+		t.Fatal("blocked retry changed interaction records or Session ownership")
+	}
+}
 
 func TestCustomRetentionAppliesToDirectCreate(t *testing.T) {
 	quota := conversationstore.DefaultQuotaPolicy()
