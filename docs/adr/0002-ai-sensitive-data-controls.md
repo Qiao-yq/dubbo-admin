@@ -37,6 +37,10 @@ not have the same purpose or retention boundary.
   flags cannot disable them.
 - Treat secret detection as defense in depth, not as a replacement for identity,
   authorization, encryption, or retention.
+- Keep the Phase 1 rule set built in and always enabled. Runtime-configurable
+  custom rules are deferred until the project has a rule validation, versioning,
+  and rollout contract; deployments can extend the baseline only through a
+  future explicitly versioned mechanism.
 
 ## Initial Rules
 
@@ -59,3 +63,6 @@ encryption requires a separate ADR and migration plan.
   operators must clean the source rather than receiving a modified index copy.
 - The Sanitizer may produce false positives. Stable rule IDs and match counts
   support diagnosis without exposing the matching value.
+- URL-encoded text is currently redacted as a whole value when its decoded form
+  contains a secret. More precise range-preserving replacement is deferred
+  because it requires maintaining encoded-to-decoded offset mappings.

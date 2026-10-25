@@ -44,3 +44,20 @@ func TestModelInputViewSanitizesCopyWithoutChangingCanonicalMessage(t *testing.T
 		t.Fatalf("canonical message was changed: %#v", canonical)
 	}
 }
+
+func TestModelInputViewSanitizesJSONText(t *testing.T) {
+	const secret = "model-json-secret"
+	canonical := ai.NewMessage(ai.RoleUser, nil,
+		ai.NewTextPart(`{"password":"`+secret+`","enabled":true}`),
+	)
+	view, err := modelInputView([]*ai.Message{canonical})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(view[0].Content[0].Text, secret) {
+		t.Fatalf("model view leaked JSON secret: %q", view[0].Content[0].Text)
+	}
+	if canonical.Content[0].Text != `{"password":"`+secret+`","enabled":true}` {
+		t.Fatalf("canonical JSON message was changed: %q", canonical.Content[0].Text)
+	}
+}
