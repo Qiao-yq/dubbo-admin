@@ -23,6 +23,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	"dubbo-admin-ai/security"
@@ -31,6 +32,7 @@ import (
 
 var (
 	ErrMandatoryBudget = errors.New("CONTEXT_MANDATORY_BUDGET_EXCEEDED")
+	ErrInvalidBudget   = errors.New("INVALID_CONTEXT_BUDGET")
 	ErrTemplateInput   = errors.New("PROMPT_REQUIRED_INPUT_MISSING")
 	ErrTemplateVersion = errors.New("PROMPT_VERSION_UNAVAILABLE")
 )
@@ -45,17 +47,16 @@ type SourceDescriptor struct {
 	RequiredPermission []string
 }
 type CollectRequest struct {
-	SummaryCalls             int
-	SummaryBacklog           bool
-	Summary                  *store.Summary
-	HistorySnapshot          store.HistorySnapshot
-	SummaryReason            string
-	Access                   security.AccessContext
-	SessionID, InteractionID string
-	TurnID                   uint64
-	Turns                    []store.TurnContext
-	Recovery                 store.ToolRecovery
-	MaxItems                 int
+	Access security.AccessContext
+	// SessionTenantID and SessionOwnerID come from the trusted Session/Turn
+	// snapshot. They identify the resource owner, which may differ from the
+	// acting subject when a same-tenant administrator is authorized.
+	SessionTenantID, SessionOwnerID string
+	SessionID, InteractionID        string
+	TurnID                          uint64
+	Turns                           []store.TurnContext
+	Recovery                        store.ToolRecovery
+	MaxItems                        int
 	// MaxCollectBytes bounds raw Source content before rendering. MaxBytes is
 	// the independent rendered message/tool-schema budget. Metadata is count-bounded.
 	MaxCollectBytes int
@@ -72,10 +73,6 @@ type Event struct {
 	Batch *store.ToolBatch
 }
 type ContextItem struct {
-	SummarySequence              uint64
-	HistoryPrevious              uint64
-	HistorySequence              uint64
-	CoversThrough                uint64
 	Scope                        string
 	Trust                        string
 	Authority                    string
@@ -93,12 +90,7 @@ type ContextItem struct {
 
 // SourcePolicy is assigned at registration by the trusted composition root.
 type SourcePolicy struct {
-	// SummaryDedup permits terminal-position deduplication without treating
-	// recovery details as complete Turns in history omission accounting.
-	SummaryDedup    bool
-	History         bool
-	HistoryCoverage bool
-	Scope           string
+	Scope string
 	// Classifications are assigned by the server, never promoted by a Source.
 	Trust           string
 	Authority       string
@@ -142,27 +134,12 @@ type CompilationDecision struct {
 	EstimatedTokens                                     int
 }
 type CompilationReport struct {
-	Summary                                                                      *SummaryReport
-	HistoryOmissions                                                             []HistoryOmission
 	ContextTokens                                                                int
 	InteractionID, CompilerVersion, PolicyVersion, TemplateRef, EstimatorVersion string
 	InputTokens, ReservedOutput, SafetyMargin                                    int
 	Decisions                                                                    []CompilationDecision
 	Degraded                                                                     bool
 	DegradationReasons                                                           []string
-}
-
-// HistoryOmission identifies a missing interval by opaque terminal cursors:
-// (After, Through]. It makes no assumption that sequence numbers are contiguous.
-type HistoryOmission struct {
-	After, Through uint64
-	ReasonCode     string
-}
-
-type SummaryReport struct {
-	SnapshotUpper, Target, AvailableCovered, SelectedCovered uint64
-	Calls                                                    int
-	Backlog, FragmentPending                                 bool
 }
 type CompiledRequest struct {
 	ContextTokens                            int
@@ -174,4 +151,13 @@ type CompiledRequest struct {
 	Report                                   CompilationReport
 }
 
-func JSON(value any) json.RawMessage { data, _ := json.Marshal(value); return data }
+// JSON is the fail-closed JSON boundary used by the compiler and its tests.
+// Serialization errors must never turn into an empty value that undercounts
+// the request budget.
+func JSON(value any) json.RawMessage {
+	data, err := json.Marshal(value)
+	if err != nil {
+		panic(fmt.Errorf("marshal JSON: %w", err))
+	}
+	return data
+}
