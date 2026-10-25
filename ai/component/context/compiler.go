@@ -126,8 +126,20 @@ func (c *Compiler) Compile(ctx context.Context, req CompileRequest) (*CompiledRe
 	if req.SessionID == "" || req.TurnID == 0 || req.MaxItems <= 0 || req.MaxItems > 10000 {
 		return nil, fmt.Errorf("invalid bounded collection request")
 	}
-	if req.ContextTokens <= 0 || req.OutputTokens <= 0 || req.SafetyMargin < 0 {
-		return nil, fmt.Errorf("invalid context budget")
+	if req.SessionTenantID == "" || req.SessionOwnerID == "" {
+		for _, turn := range req.Turns {
+			if turn.ID == req.TurnID {
+				req.SessionTenantID, req.SessionOwnerID = turn.TenantID, turn.OwnerID
+				break
+			}
+		}
+	}
+	if !req.Access.CanAccessOwner(req.SessionTenantID, req.SessionOwnerID) {
+		return nil, security.ErrResourceNotAccessible
+	}
+	if req.ContextTokens <= 0 || req.OutputTokens <= 0 || req.SafetyMargin < 0 ||
+		req.SafetyMargin >= req.ContextTokens || req.OutputTokens > req.ContextTokens-req.SafetyMargin {
+		return nil, ErrInvalidBudget
 	}
 	if req.MaxBytes <= 0 {
 		req.MaxBytes = 8 << 20
@@ -221,7 +233,7 @@ func (c *Compiler) Compile(ctx context.Context, req CompileRequest) (*CompiledRe
 			item.Authority = r.policy.Authority
 			item.Sensitivity = r.policy.Sensitivity
 			d := CompilationDecision{ItemID: item.ID, SourceID: r.descriptor.ID, SourceVersion: r.descriptor.Version, Scope: item.Scope, Trust: item.Trust, Authority: item.Authority, Sensitivity: item.Sensitivity, CanonicalID: item.CanonicalID, GroupID: item.GroupID, ItemVersion: item.Version}
-			valid := item.ID != "" && !seen[r.descriptor.ID+":"+item.ID] && item.SourceID == r.descriptor.ID && item.SourceVersion == r.descriptor.Version && item.TenantID == req.Access.Subject.TenantID && item.OwnerID == req.Access.Subject.UserID && item.SessionID == req.SessionID && item.Version > 0
+			valid := item.ID != "" && !seen[r.descriptor.ID+":"+item.ID] && item.SourceID == r.descriptor.ID && item.SourceVersion == r.descriptor.Version && item.TenantID == req.SessionTenantID && item.OwnerID == req.SessionOwnerID && item.SessionID == req.SessionID && item.Version > 0
 			seen[r.descriptor.ID+":"+item.ID] = true
 			if !valid || (item.ExpiresAt != nil && !item.ExpiresAt.After(req.NotAfter)) || (!item.ObservedAt.IsZero() && item.ObservedAt.After(req.NotAfter)) {
 				d.Status = "rejected"
@@ -408,12 +420,12 @@ func renderEvents(events []Event, kinds []string) ([]Message, bool, bool, error)
 				cleanInput := security.DefaultSanitizer().SanitizeStructured(input)
 				cleanOutput := security.DefaultSanitizer().SanitizeStructured(output)
 				redacted = redacted || len(cleanInput.Findings) > 0 || len(cleanOutput.Findings) > 0
-				input = cleanInput.Value
-				output = cleanOutput.Value
-				limited, changed := limitValue(output, 0)
+				limitedInput, inputChanged := limitValue(cleanInput.Value, 0)
+				limitedOutput, outputChanged := limitValue(cleanOutput.Value, 0)
+				changed := inputChanged || outputChanged
 				trimmed = trimmed || changed
-				call.Input = JSON(input)
-				call.Output = JSON(map[string]any{"status": call.Status, "result": limited, "error_code": call.ErrorCode, "source_call_id": call.ID, "truncated": changed})
+				call.Input = JSON(limitedInput)
+				call.Output = JSON(map[string]any{"status": call.Status, "result": limitedOutput, "error_code": call.ErrorCode, "source_call_id": call.ID, "truncated": changed})
 				calls[i] = call
 			}
 			result = append(result, Message{Role: "model", Requests: calls}, Message{Role: "tool", Responses: calls})
@@ -430,17 +442,29 @@ func boundedBatchEvidence(b store.ToolBatch) (store.ToolBatch, bool, bool, error
 	b.Calls = append([]store.ToolCall(nil), b.Calls...)
 	trimmed, redacted := false, false
 	for i, call := range b.Calls {
-		if len(call.Output) == 0 {
+		if len(call.Input) == 0 && len(call.Output) == 0 {
 			continue
 		}
-		var output any
-		if err := json.Unmarshal(call.Output, &output); err != nil {
-			return b, false, false, err
+		var input any
+		if len(call.Input) > 0 {
+			if err := json.Unmarshal(call.Input, &input); err != nil {
+				return b, false, false, err
+			}
 		}
+		var output any
+		if len(call.Output) > 0 {
+			if err := json.Unmarshal(call.Output, &output); err != nil {
+				return b, false, false, err
+			}
+		}
+		cleanInput := security.DefaultSanitizer().SanitizeStructured(input)
 		clean := security.DefaultSanitizer().SanitizeStructured(output)
+		limitedInput, inputChanged := limitValue(cleanInput.Value, 0)
 		limited, changed := limitValue(clean.Value, 0)
+		changed = changed || inputChanged
 		trimmed = trimmed || changed
-		redacted = redacted || len(clean.Findings) > 0
+		redacted = redacted || len(clean.Findings) > 0 || len(cleanInput.Findings) > 0
+		b.Calls[i].Input = JSON(limitedInput)
 		b.Calls[i].Output = JSON(map[string]any{"status": call.Status, "result": limited, "error_code": call.ErrorCode, "source_call_id": call.ID, "truncated": changed})
 	}
 	return b, trimmed, redacted, nil
@@ -457,17 +481,30 @@ func limitValue(v any, depth int) (any, bool) {
 			return string(r[:2048]) + "[truncated]", true
 		}
 	case []any:
-		changed := len(x) > 32
-		if len(x) > 32 {
-			x = x[:32]
+		limit := len(x)
+		changed := limit > 32
+		if limit > 32 {
+			limit = 32
 		}
-		out := make([]any, len(x))
-		for i, v := range x {
+		var out []any
+		for i, v := range x[:limit] {
 			var cut bool
-			out[i], cut = limitValue(v, depth+1)
+			limited, cut := limitValue(v, depth+1)
 			changed = changed || cut
+			if cut && out == nil {
+				out = append([]any(nil), x[:i]...)
+			}
+			if out != nil {
+				out = append(out, limited)
+			}
 		}
-		return out, changed
+		if !changed {
+			return x, false
+		}
+		if out == nil {
+			out = append([]any(nil), x[:limit]...)
+		}
+		return out, true
 	case map[string]any:
 		keys := make([]string, 0, len(x))
 		for k := range x {
@@ -478,13 +515,30 @@ func limitValue(v any, depth int) (any, bool) {
 		if len(keys) > 32 {
 			keys = keys[:32]
 		}
-		out := map[string]any{}
-		for _, k := range keys {
+		var out map[string]any
+		for i, k := range keys {
 			v, cut := limitValue(x[k], depth+1)
-			out[k] = v
 			changed = changed || cut
+			if cut && out == nil {
+				out = make(map[string]any, len(keys))
+				for _, existing := range keys[:i] {
+					out[existing] = x[existing]
+				}
+			}
+			if out != nil {
+				out[k] = v
+			}
 		}
-		return out, changed
+		if !changed {
+			return x, false
+		}
+		if out == nil {
+			out = make(map[string]any, len(keys))
+			for _, k := range keys {
+				out[k] = x[k]
+			}
+		}
+		return out, true
 	}
 	return v, false
 }

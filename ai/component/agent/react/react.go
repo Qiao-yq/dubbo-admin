@@ -78,6 +78,8 @@ const persistenceTimeout = 30 * time.Second
 
 type interactionState struct {
 	turns         []conversationstore.TurnContext
+	sessionTenant string
+	sessionOwner  string
 	recovery      conversationstore.ToolRecovery
 	templateRef   string
 	allowedTools  map[string]bool
@@ -441,6 +443,13 @@ func (ra *ReActAgent) newInteraction(parent context.Context, input *schema.UserI
 					limit = 0
 				}
 				state.turns, err = ra.compilationStore.ContextTurns(parent, access, sessionID, turnID, limit, ra.compilerSpec.MaxCollectBytes)
+				if err == nil && len(state.turns) > 0 {
+					state.sessionTenant = state.turns[0].TenantID
+					state.sessionOwner = state.turns[0].OwnerID
+					if !access.CanAccessOwner(state.sessionTenant, state.sessionOwner) {
+						err = security.ErrResourceNotAccessible
+					}
+				}
 			}
 			if err == nil {
 				state.recovery, err = ra.compilationStore.RecoveryToolBatches(parent, access, sessionID, turnID, 16, min(conversationstore.MaxToolBatchBytes, ra.compilerSpec.MaxCollectBytes))

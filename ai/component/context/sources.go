@@ -135,7 +135,7 @@ func legacyToolEvidence(text string) bool {
 }
 
 func verifyBatch(req CollectRequest, turn store.TurnContext, b store.ToolBatch) error {
-	if b.SessionID != req.SessionID || b.TurnID != turn.ID || b.TenantID != req.Access.Subject.TenantID || b.OwnerID != req.Access.Subject.UserID || b.SchemaVersion != "v1" || b.Version == 0 {
+	if b.SessionID != req.SessionID || b.TurnID != turn.ID || b.TenantID != req.SessionTenantID || b.OwnerID != req.SessionOwnerID || b.SchemaVersion != "v1" || b.Version == 0 {
 		return fmt.Errorf("invalid tool batch provenance")
 	}
 	return nil
@@ -181,7 +181,7 @@ func (s RecoverySource) Collect(ctx context.Context, req CollectRequest) (Collec
 		return result, nil
 	}
 	makeItem := func(id, text string) ContextItem {
-		return ContextItem{ID: id, SourceID: s.Descriptor().ID, SourceVersion: "v1", TenantID: req.Access.Subject.TenantID, OwnerID: req.Access.Subject.UserID, SessionID: req.SessionID, Version: 1, Events: []Event{{Kind: "evidence", Text: text}}}
+		return ContextItem{ID: id, SourceID: s.Descriptor().ID, SourceVersion: "v1", TenantID: req.SessionTenantID, OwnerID: req.SessionOwnerID, SessionID: req.SessionID, Version: 1, Events: []Event{{Kind: "evidence", Text: text}}}
 	}
 	if s.Notice {
 		result.Items = append(result.Items, makeItem("notice", "Previous released attempts have tool execution records. Successful calls may already have effects; pending/interrupted calls have unknown execution outcomes. Do not assume they did not execute or automatically replay them. Recovery details are bounded and may be omitted; absence of details is not evidence of non-execution."))

@@ -124,7 +124,7 @@ func (ra *ReActAgent) compile(ctx context.Context, state *interactionState, s *i
 		}
 	}
 	result, err := ra.compiler.Compile(ctx, comp.CompileRequest{
-		CollectRequest: comp.CollectRequest{Access: state.access, SessionID: s.Session, InteractionID: s.InteractionID, TurnID: state.turnID, Turns: state.turns, Recovery: state.recovery, MaxItems: 1000, MaxBytes: ra.compilerSpec.MaxContextBytes, MaxCollectBytes: ra.compilerSpec.MaxCollectBytes, NotAfter: time.Now()},
+		CollectRequest: comp.CollectRequest{Access: state.access, SessionTenantID: state.sessionTenant, SessionOwnerID: state.sessionOwner, SessionID: s.Session, InteractionID: s.InteractionID, TurnID: state.turnID, Turns: state.turns, Recovery: state.recovery, MaxItems: 1000, MaxBytes: ra.compilerSpec.MaxContextBytes, MaxCollectBytes: ra.compilerSpec.MaxCollectBytes, NotAfter: time.Now()},
 		Model:          ra.model, Phase: phase, TemplateRef: state.templateRef, Variables: ra.compilerSpec.TemplateVariables, Tools: tools,
 		ContextTokens: ra.compilerSpec.ContextTokens, OutputTokens: ra.compilerSpec.MaxTokens, SafetyMargin: ra.compilerSpec.SafetyMargin, Temperature: ra.compilerSpec.Temperature, TopP: ra.compilerSpec.TopP,
 	})

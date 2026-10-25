@@ -23,6 +23,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	"dubbo-admin-ai/security"
@@ -31,6 +32,7 @@ import (
 
 var (
 	ErrMandatoryBudget = errors.New("CONTEXT_MANDATORY_BUDGET_EXCEEDED")
+	ErrInvalidBudget   = errors.New("INVALID_CONTEXT_BUDGET")
 	ErrTemplateInput   = errors.New("PROMPT_REQUIRED_INPUT_MISSING")
 	ErrTemplateVersion = errors.New("PROMPT_VERSION_UNAVAILABLE")
 )
@@ -45,12 +47,16 @@ type SourceDescriptor struct {
 	RequiredPermission []string
 }
 type CollectRequest struct {
-	Access                   security.AccessContext
-	SessionID, InteractionID string
-	TurnID                   uint64
-	Turns                    []store.TurnContext
-	Recovery                 store.ToolRecovery
-	MaxItems                 int
+	Access security.AccessContext
+	// SessionTenantID and SessionOwnerID come from the trusted Session/Turn
+	// snapshot. They identify the resource owner, which may differ from the
+	// acting subject when a same-tenant administrator is authorized.
+	SessionTenantID, SessionOwnerID string
+	SessionID, InteractionID        string
+	TurnID                          uint64
+	Turns                           []store.TurnContext
+	Recovery                        store.ToolRecovery
+	MaxItems                        int
 	// MaxCollectBytes bounds raw Source content before rendering. MaxBytes is
 	// the independent rendered message/tool-schema budget. Metadata is count-bounded.
 	MaxCollectBytes int
@@ -145,4 +151,13 @@ type CompiledRequest struct {
 	Report                                   CompilationReport
 }
 
-func JSON(value any) json.RawMessage { data, _ := json.Marshal(value); return data }
+// JSON is the fail-closed JSON boundary used by the compiler and its tests.
+// Serialization errors must never turn into an empty value that undercounts
+// the request budget.
+func JSON(value any) json.RawMessage {
+	data, err := json.Marshal(value)
+	if err != nil {
+		panic(fmt.Errorf("marshal JSON: %w", err))
+	}
+	return data
+}

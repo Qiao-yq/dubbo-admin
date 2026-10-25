@@ -29,7 +29,7 @@ import (
 )
 
 func (ra *ReActAgent) execCanonicalTools(ctx context.Context, state *interactionState, s *interactionTrace, reqs []*ai.ToolRequest) (err error) {
-	batch := store.ToolBatch{ID: uuid.NewString(), TenantID: state.access.Subject.TenantID, OwnerID: state.access.Subject.UserID, SessionID: s.Session, TurnID: state.turnID, InteractionID: state.interactionID, Sequence: uint64(s.Iteration), Version: 1, SchemaVersion: "v1"}
+	batch := store.ToolBatch{ID: uuid.NewString(), TenantID: state.sessionTenant, OwnerID: state.sessionOwner, SessionID: s.Session, TurnID: state.turnID, InteractionID: state.interactionID, Sequence: uint64(s.Iteration), Version: 1, SchemaVersion: "v1"}
 	batch.ModelCallID = s.ModelCallID
 	seen := map[string]bool{}
 	for _, req := range reqs {

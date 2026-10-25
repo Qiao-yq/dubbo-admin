@@ -92,7 +92,7 @@ type CompilationStore interface {
 }
 
 func ValidateToolBatch(access security.AccessContext, b ToolBatch) error {
-	if b.ID == "" || b.SessionID == "" || b.TurnID == 0 || b.Sequence == 0 || b.Version != 1 || b.SchemaVersion != "v1" || len(b.Calls) == 0 || len(b.Calls) > 64 || b.TenantID != access.Subject.TenantID || b.OwnerID != access.Subject.UserID {
+	if b.ID == "" || b.SessionID == "" || b.TurnID == 0 || b.Sequence == 0 || b.Version != 1 || b.SchemaVersion != "v1" || len(b.Calls) == 0 || len(b.Calls) > 64 || b.TenantID != access.Subject.TenantID || !access.CanAccessOwner(b.TenantID, b.OwnerID) {
 		return fmt.Errorf("invalid tool batch")
 	}
 	seen := map[string]bool{}
