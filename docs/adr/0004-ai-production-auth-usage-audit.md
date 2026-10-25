@@ -6,12 +6,17 @@ Accepted for Phase 1 PR4.
 
 ## Decisions
 
-1. Production HTTP traffic uses a verified JWT bearer token. The initial adapter
-   accepts HS256 with a deployment-provided secret and validates signature,
-   issuer, audience, expiry, and the `sub`/tenant claims. Identity is never
-   read from ordinary request headers or request bodies.
+1. Production HTTP traffic uses PR #1600's Admin-issued RS256 bearer tokens and
+   JWKS verifier. PR #1600 is a prerequisite of this PR; its Admin endpoints,
+   key ring and frontend token lifecycle are reused. The verifier validates
+   signature, issuer, audience, expiry, issued-at and subject. A signed
+   `tenant_id` selects the tenant; tokens without it use the trusted deployment
+   `auth.tenant_id` (default `default`, for the single-tenant Admin issuer).
+   There is no `tenant` alias or request-header/body identity fallback. Roles
+   do not imply scopes or internal system capabilities.
 2. Static authentication remains loopback-only development support. Enabling
-   the `production_auth` flag requires JWT mode.
+   the `production_auth` flag requires `auth.enabled: true`. One `auth` block
+   configures both modes; there is no parallel `authentication` block.
 3. Usage and audit records contain identifiers, lifecycle status, reason codes,
    model/provider metadata, versions, and token counts. They never contain
    complete prompts, model responses, tool arguments, or tool results.
@@ -23,7 +28,12 @@ Accepted for Phase 1 PR4.
    ToolCallID from the tool request. Interaction-level events leave call IDs empty.
    ToolCallID is interpreted within its interaction, not as a global identifier.
 4. Missing provider usage or pricing is represented by a missing value or
-   `unknown`; it is never converted to zero.
+   `unknown`; it is never converted to zero. OpenAI-compatible HTTP middleware
+   observes the nullable usage object before Genkit allocates a zero value,
+   including final SSE usage-only chunks. Explicit provider zero remains zero.
+   All three token fields must be present and nonnegative. Per-call observations
+   are isolated and only usage metadata is retained. Response/line parsing uses
+   a transient 1 MiB bound; oversized records remain unknown.
 5. Usage and audit writes are tenant and subject scoped at the Store boundary.
    The Memory and GORM stores expose the same `UsageAuditStore` contract.
 6. Usage and audit records use an independent 30-day default retention and
@@ -42,7 +52,12 @@ Accepted for Phase 1 PR4.
 
 ## Consequences
 
-The JWT secret, issuer, and audience must be supplied through deployment
-configuration. A future JWKS or signed-gateway adapter can implement the same
-`security.Authenticator` interface. Source-level token attribution and the
-Context Compiler remain later-phase work.
+Deployments configure `auth.jwks_url`, `auth.issuer`, `auth.audience`, and the
+trusted fallback tenant. Invalid configuration is a startup configuration error,
+distinct from a request authentication failure. Startup fails if Admin JWKS
+cannot be loaded. The shared JWKS cache and failed-refresh cooldown are 30
+seconds; failed refreshes reject expired keys. Publish a new public key at least
+30 seconds before activating its signing key, and retain old keys until issued
+tokens expire. Missing audit identity emits a metadata-only warning and skips
+persistence. Source-level token attribution and the Context Compiler remain
+later-phase work.

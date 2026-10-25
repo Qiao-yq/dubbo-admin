@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"dubbo-admin-ai/runtime"
@@ -63,6 +64,7 @@ type Component struct {
 	provider     *sdktrace.TracerProvider
 	usageStore   conversationstore.UsageAuditStore
 	usageOptions UsageAuditOptions
+	usageMu      sync.RWMutex
 	initialized  bool
 }
 
@@ -130,7 +132,7 @@ func (c *Component) Init(rt *runtime.Runtime) error {
 		}
 	}
 	if c.usageStore != nil {
-		if err := c.manager.Register(NewUsageAuditRegistration(c.usageStore, rt.GetLogger(), &c.usageOptions)); err != nil {
+		if err := c.manager.Register(newUsageAuditRegistration(c.usageStore, rt.GetLogger(), c.usageAuditSnapshot)); err != nil {
 			return fmt.Errorf("register usage and audit hook: %w", err)
 		}
 	}
@@ -231,13 +233,20 @@ func (c *Component) SetUsageAuditStore(store conversationstore.UsageAuditStore) 
 }
 
 // SetUsageAuditFeatures updates rollout switches without replacing provenance.
-// Like server configuration, this must be called before serving requests.
 func (c *Component) SetUsageAuditFeatures(usagePersistence, auditEvents bool) {
 	if c == nil {
 		return
 	}
+	c.usageMu.Lock()
+	defer c.usageMu.Unlock()
 	c.usageOptions.UsagePersistence = usagePersistence
 	c.usageOptions.AuditEvents = auditEvents
+}
+
+func (c *Component) usageAuditSnapshot() UsageAuditOptions {
+	c.usageMu.RLock()
+	defer c.usageMu.RUnlock()
+	return c.usageOptions
 }
 
 // GetActiveManager is used by the agent hot path. The component retains its

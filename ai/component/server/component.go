@@ -67,7 +67,7 @@ func NewServerComponent(
 	if len(timeouts) > 1 {
 		writeTimeout = timeouts[1]
 	}
-	authentication := DefaultServerSpec().Authentication
+	authentication := DefaultServerSpec().Auth
 	return &ServerComponent{
 		port:           port,
 		host:           normalizeHost(host),
@@ -125,20 +125,17 @@ func (s *ServerComponent) Validate() error {
 	if s.writeTimeout <= 0 {
 		return fmt.Errorf("write_timeout must be greater than 0")
 	}
-	if s.authentication.Mode != "static" && s.authentication.Mode != "jwt" {
-		return fmt.Errorf("unsupported authentication mode %q", s.authentication.Mode)
-	}
-	if s.features.ProductionAuth && s.authentication.Mode != "jwt" {
+	if s.features.ProductionAuth && !s.authentication.Enabled {
 		return fmt.Errorf("production_auth requires jwt authentication")
 	}
-	if s.authentication.Mode == "static" && (s.authentication.TenantID == "" || s.authentication.UserID == "") {
+	if !s.authentication.Enabled && (s.authentication.TenantID == "" || s.authentication.UserID == "") {
 		return fmt.Errorf("authentication tenant_id and user_id are required")
 	}
-	if s.authentication.Mode == "static" && !s.authentication.AllowInsecureStaticAuth && !isLoopbackHost(s.host) {
+	if !s.authentication.Enabled && !s.authentication.AllowInsecureStaticAuth && !isLoopbackHost(s.host) {
 		return fmt.Errorf("static authentication may only bind to a loopback host unless allow_insecure_static_auth is true")
 	}
-	if s.authentication.Mode == "jwt" && (s.authentication.JWTSecret == "" || s.authentication.JWTIssuer == "" || s.authentication.JWTAudience == "") {
-		return fmt.Errorf("jwt authentication requires jwt_secret, jwt_issuer, and jwt_audience")
+	if s.authentication.Enabled {
+		return s.authentication.Validate()
 	}
 	return nil
 }
@@ -220,10 +217,10 @@ func (s *ServerComponent) Start() error {
 
 	var authenticator security.Authenticator
 	var subject security.Subject
-	if s.authentication.Mode == "jwt" {
-		authenticator, err = security.NewJWTAuthenticator(security.JWTConfig{
-			Secret: []byte(s.authentication.JWTSecret), Issuer: s.authentication.JWTIssuer, Audience: s.authentication.JWTAudience,
-		})
+	if s.authentication.Enabled {
+		authenticator, err = engine.NewJWTVerifier(engine.JWTAuthConfig{
+			JWKSURL: s.authentication.JWKSURL, Issuer: s.authentication.Issuer, Audience: s.authentication.Audience, TenantID: s.authentication.TenantID,
+		}, nil)
 		if err != nil {
 			return fmt.Errorf("failed to configure jwt authenticator: %w", err)
 		}
@@ -236,7 +233,7 @@ func (s *ServerComponent) Start() error {
 	}
 
 	// Create router with AI interface
-	if s.authentication.Mode == "static" {
+	if !s.authentication.Enabled {
 		if err := adoptLegacySessions(context.Background(), maintenanceStore, s.authentication.AdoptLegacySessions, subject); err != nil {
 			return fmt.Errorf("failed to adopt legacy sessions: %w", err)
 		}

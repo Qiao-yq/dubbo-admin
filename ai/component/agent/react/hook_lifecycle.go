@@ -21,6 +21,7 @@ import (
 	"context"
 	"dubbo-admin-ai/component/hooks"
 	toolEngine "dubbo-admin-ai/component/tools/engine"
+	"dubbo-admin-ai/providerusage"
 	"dubbo-admin-ai/runtime"
 	"errors"
 	"fmt"
@@ -106,6 +107,7 @@ func executeModelCall(
 		return genAIInputMessages(input)
 	})
 	ctx = emitHook(s.hookManager, ctx, startState)
+	ctx = providerusage.WithObservation(ctx)
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			err = fmt.Errorf("model call panicked: %v", recovered)
@@ -169,6 +171,13 @@ func emitModelCallEnd(ctx context.Context, s *interactionTrace, callID string, s
 		endState.OutputTokens = response.Usage.OutputTokens
 		endState.TotalTokens = response.Usage.TotalTokens
 		endState.UsagePresent = true
+	}
+	if tokens, observed := providerusage.FromContext(ctx); observed {
+		endState.UsagePresent = tokens != nil
+		endState.InputTokens, endState.OutputTokens, endState.TotalTokens = 0, 0, 0
+		if tokens != nil {
+			endState.InputTokens, endState.OutputTokens, endState.TotalTokens = tokens.Input, tokens.Output, tokens.Total
+		}
 	}
 	emitHook(s.hookManager, ctx, endState)
 }

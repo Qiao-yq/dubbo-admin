@@ -1,7 +1,10 @@
 package hooks
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -9,6 +12,35 @@ import (
 	"dubbo-admin-ai/security"
 	conversationstore "dubbo-admin-ai/store"
 )
+
+func TestUsageAuditOptionsAreCopied(t *testing.T) {
+	options := &UsageAuditOptions{UsagePersistence: true}
+	recorder := &usageAuditRecorder{}
+	registration := NewUsageAuditRegistration(recorder, nil, options)
+	if options.SchemaVersion != "" || options.PolicyVersion != "" || options.ComponentVersion != "" {
+		t.Fatal("registration mutated caller options")
+	}
+	options.UsagePersistence = false
+	ctx := security.WithAccessContext(context.Background(), security.MustAccessContext(security.Subject{TenantID: "tenant", UserID: "user", AuthMethod: security.AuthMethodJWT}))
+	registration.Hook(ctx, State{Event: EventModelCallEnd})
+	if len(recorder.usage) != 1 || recorder.usage[0].SchemaVersion != UsageAuditSchemaVersion {
+		t.Fatal("caller mutation changed the registration snapshot")
+	}
+}
+
+func TestUsageAuditMissingIdentityWarnsWithoutPersisting(t *testing.T) {
+	var output bytes.Buffer
+	recorder := &usageAuditRecorder{}
+	registration := NewUsageAuditRegistration(recorder, slog.New(slog.NewTextHandler(&output, nil)))
+	registration.Hook(context.Background(), State{Event: EventModelCallEnd, Input: "private prompt", Error: "private error"})
+	if len(recorder.usage) != 0 || len(recorder.audit) != 0 {
+		t.Fatal("missing identity must not create records")
+	}
+	log := output.String()
+	if !strings.Contains(log, "level=WARN") || !strings.Contains(log, "no access context") || strings.Contains(log, "private") {
+		t.Fatalf("unexpected warning: %s", log)
+	}
+}
 
 type usageAuditRecorder struct {
 	usage []conversationstore.UsageEvent

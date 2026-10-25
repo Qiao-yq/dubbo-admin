@@ -46,15 +46,18 @@ func (o UsageAuditOptions) withVersions() UsageAuditOptions {
 // NewUsageAuditRegistration records only identifiers, statuses, reason codes,
 // versions and token counts. It never captures variable model or tool content.
 func NewUsageAuditRegistration(store conversationstore.UsageAuditStore, logger *slog.Logger, optionPtrs ...*UsageAuditOptions) Registration {
+	options := DefaultUsageAuditOptions()
+	if len(optionPtrs) > 0 && optionPtrs[0] != nil {
+		options = optionPtrs[0].withVersions()
+	}
+	return newUsageAuditRegistration(store, logger, func() UsageAuditOptions { return options })
+}
+
+// The component supplies synchronized snapshots for runtime rollout switches.
+func newUsageAuditRegistration(store conversationstore.UsageAuditStore, logger *slog.Logger, snapshot func() UsageAuditOptions) Registration {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	defaults := DefaultUsageAuditOptions()
-	options := &defaults
-	if len(optionPtrs) > 0 && optionPtrs[0] != nil {
-		options = optionPtrs[0]
-	}
-	*options = options.withVersions()
 	// Detailed iteration/stage and call-start events belong to tracing. Call-end
 	// events already carry failures, including panic and cancellation outcomes.
 	return Registration{Events: []Event{
@@ -62,8 +65,16 @@ func NewUsageAuditRegistration(store conversationstore.UsageAuditStore, logger *
 		EventInteractionCancel, EventInteractionDegrade,
 		EventModelCallEnd, EventToolCallEnd,
 	}, Tools: []string{AllTools}, Hook: func(ctx context.Context, state State) context.Context {
+		if store == nil {
+			return ctx
+		}
+		options := snapshot().withVersions()
+		if !options.UsagePersistence && !options.AuditEvents {
+			return ctx
+		}
 		access, err := security.AccessContextFromContext(ctx)
-		if err != nil || store == nil {
+		if err != nil {
+			logger.Warn("usage audit skipped: no access context", "event", state.Event)
 			return ctx
 		}
 		persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), usageAuditPersistenceTimeout)

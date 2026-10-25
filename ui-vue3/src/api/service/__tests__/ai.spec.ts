@@ -40,8 +40,7 @@ describe('aiService.sendChatMessage', () => {
     await aiService.sendChatMessage('hello', 'session-1', context, 'request-1')
 
     const request = fetchMock.mock.calls[0][1] as RequestInit
-    const headers = request.headers as Record<string, string>
-    expect(headers['Idempotency-Key']).toBe('request-1')
+    expect(new Headers(request.headers).get('Idempotency-Key')).toBe('request-1')
     expect(JSON.parse(String(request.body))).toEqual({
       message: 'hello',
       sessionID: 'session-1',

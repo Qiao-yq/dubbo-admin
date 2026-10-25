@@ -114,7 +114,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch, onMounted, nextTick } from 'vue'
+import { computed, ref, shallowRef, watch, onMounted, nextTick } from 'vue'
 import { message } from 'ant-design-vue'
 import MarkdownIt from 'markdown-it'
 import hljs from 'highlight.js'
@@ -200,7 +200,7 @@ const sessions = ref<Session[]>([])
 const historyModalVisible = ref(false)
 
 const lastUserMessage = ref<string>('') // 保存最后一次用户消息用于重试
-const lastRequestContext = ref<unknown>()
+const lastRequestContext = shallowRef<unknown>()
 const lastIdempotencyKey = ref('')
 const usageInfo = ref<any>(null) // 保存使用情况信息
 

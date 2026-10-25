@@ -75,10 +75,10 @@ func NewRouterWithLifecycle(agent agent.Agent, store conversationstore.Store, ma
 func (r *Router) setupRoutes(corsOrigins []string) {
 	// Add CORS middleware
 	r.engine.Use(corsMiddleware(corsOrigins))
+	r.engine.Use(authenticationMiddleware(r.authenticator))
 
 	// API v1 group
 	v1 := r.engine.Group("/api/v1/ai")
-	v1.Use(authenticationMiddleware(r.authenticator))
 	{
 		// Chat endpoints
 		v1.POST("/chat/stream", r.handler.StreamChat) // Streaming chat
@@ -95,6 +95,7 @@ func authenticationMiddleware(authenticator security.Authenticator) gin.HandlerF
 	return func(c *gin.Context) {
 		access, err := authenticator.Authenticate(c.Request)
 		if err != nil || access.Validate() != nil || access.IsSystem() {
+			c.Header("WWW-Authenticate", "Bearer")
 			c.AbortWithStatusJSON(http.StatusUnauthorized, NewAPIErrorResponse("AUTHENTICATION_REQUIRED", "Authentication required"))
 			return
 		}
@@ -131,7 +132,7 @@ func corsMiddleware(allowedOrigins []string) gin.HandlerFunc {
 		if c.Writer.Header().Get("Access-Control-Allow-Origin") != "" {
 			c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 			c.Header("Access-Control-Allow-Headers", "Origin, Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, Idempotency-Key, traceparent, tracestate, baggage")
-			c.Header("Access-Control-Expose-Headers", "X-Trace-ID, X-Interaction-ID")
+			c.Header("Access-Control-Expose-Headers", "X-Trace-ID, X-Interaction-ID, WWW-Authenticate")
 		}
 
 		if c.Request.Method == "OPTIONS" {

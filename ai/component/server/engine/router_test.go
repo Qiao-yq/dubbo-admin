@@ -19,6 +19,8 @@ package engine
 
 import (
 	"bytes"
+	"crypto/rand"
+	"crypto/rsa"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -39,10 +41,32 @@ func (rejectingAuthenticator) Authenticate(*http.Request) (security.AccessContex
 	return security.AccessContext{}, security.ErrAuthenticationRequired
 }
 
+func TestRouterProtectsRoutesOutsideAIPrefix(t *testing.T) {
+	store := memorystore.NewMemoryStore()
+	router, err := NewRouter(nil, store, store, rejectingAuthenticator{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = router.Close() })
+	router.GetEngine().GET("/future-endpoint", func(c *gin.Context) { c.Status(http.StatusNoContent) })
+	assertAIStatus(t, router.GetEngine(), http.MethodGet, "/future-endpoint", "", http.StatusUnauthorized)
+}
+
 func TestJWTAuthenticationFlowsIntoSessionOwnership(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	secret := []byte("01234567890123456789012345678901")
-	auth, err := security.NewJWTAuthenticator(security.JWTConfig{Secret: secret, Issuer: "issuer", Audience: "audience"})
+	secret, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrongKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jwksServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(jwksForTest(map[string]*rsa.PublicKey{"key": &secret.PublicKey}))
+	}))
+	defer jwksServer.Close()
+	auth, err := NewJWTVerifier(JWTAuthConfig{JWKSURL: jwksServer.URL, Issuer: "issuer", Audience: "audience"}, jwksServer.Client())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,8 +76,9 @@ func TestJWTAuthenticationFlowsIntoSessionOwnership(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = router.Close() })
-	claims := jwt.MapClaims{"iss": "issuer", "aud": "audience", "sub": "user-a", "tenant_id": "tenant-a", "exp": time.Now().Add(time.Minute).Unix()}
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	claims := jwt.MapClaims{"iss": "issuer", "aud": "audience", "sub": "user-a", "tenant_id": "tenant-a", "iat": time.Now().Unix(), "exp": time.Now().Add(time.Minute).Unix()}
+	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
+	token.Header["kid"] = "key"
 	value, _ := token.SignedString(secret)
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/ai/sessions", nil)
 	request.Header.Set("Authorization", "Bearer "+value)
@@ -76,15 +101,17 @@ func TestJWTAuthenticationFlowsIntoSessionOwnership(t *testing.T) {
 	}
 	for _, caller := range []struct {
 		name, tenant, user string
-		secret             []byte
+		secret             *rsa.PrivateKey
 	}{
 		{"other user", "tenant-a", "user-b", secret},
 		{"other tenant", "tenant-b", "user-a", secret},
-		{"wrong signature", "tenant-a", "user-a", []byte("different-secret-0123456789012345")},
+		{"wrong signature", "tenant-a", "user-a", wrongKey},
 	} {
 		t.Run(caller.name, func(t *testing.T) {
-			claims := jwt.MapClaims{"iss": "issuer", "aud": "audience", "sub": caller.user, "tenant_id": caller.tenant, "exp": time.Now().Add(time.Minute).Unix()}
-			value, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(caller.secret)
+			claims := jwt.MapClaims{"iss": "issuer", "aud": "audience", "sub": caller.user, "tenant_id": caller.tenant, "iat": time.Now().Unix(), "exp": time.Now().Add(time.Minute).Unix()}
+			token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
+			token.Header["kid"] = "key"
+			value, err := token.SignedString(caller.secret)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -157,7 +184,7 @@ func TestCORSMiddlewareAllowsTracePropagationHeaders(t *testing.T) {
 			t.Fatalf("Access-Control-Allow-Headers = %q, missing %q", allowed, header)
 		}
 	}
-	if exposed := response.Header().Get("Access-Control-Expose-Headers"); exposed != "X-Trace-ID, X-Interaction-ID" {
+	if exposed := response.Header().Get("Access-Control-Expose-Headers"); exposed != "X-Trace-ID, X-Interaction-ID, WWW-Authenticate" {
 		t.Fatalf("Access-Control-Expose-Headers = %q, want trace and interaction IDs", exposed)
 	}
 }
