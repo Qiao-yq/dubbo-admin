@@ -50,7 +50,7 @@ var (
 	authorizationPattern        = regexp.MustCompile(`(?i)\b(?:bearer|basic)\s+[A-Za-z0-9._~+/=-]+`)
 	jwtPattern                  = regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\b`)
 	apiKeyPattern               = regexp.MustCompile(`\b(?:sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{16,}|AIza[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{16,})\b`)
-	credentialAssignmentPattern = regexp.MustCompile(`(?i)\b(authorization|proxy[-_]?authorization|cookie|set[-_]?cookie|token|access[-_]?token|refresh[-_]?token|api[-_]?key|apikey|password|passwd|secret|client[-_]?secret|client[-_]?key[-_]?data|client[-_]?certificate[-_]?data)(\s*(?::|=|%3[dD])\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;&\r\n]+)`)
+	credentialAssignmentPattern = regexp.MustCompile(`(?i)\b(authorization|proxy[-_]?authorization|cookie|set[-_]?cookie|token|access[-_]?token|refresh[-_]?token|api[-_]?key|apikey|password|passwd|secret|client[-_]?secret|client[-_]?key[-_]?data|client[-_]?certificate[-_]?data)\b(\s*"?\s*(?::|=|%3[dD])\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;&\r\n]+)`)
 	encodedCandidatePattern     = regexp.MustCompile(`\b[A-Za-z0-9+/_-]{20,1000}={0,2}\b`)
 )
 
@@ -233,7 +233,7 @@ func (s *Sanitizer) sanitizeText(value, path string, inspectEncoded bool) (strin
 		if len(parts) < 3 {
 			return redactedValue
 		}
-		return parts[1] + parts[2] + redactedValue
+		return parts[1] + parts[2] + quotedRedactedValue(parts[2])
 	})
 	clean, findings = replaceMatches(clean, jwtPattern, RuleJWT, path, findings, func(string) string { return redactedValue })
 	clean, findings = replaceMatches(clean, apiKeyPattern, RuleAPIKey, path, findings, func(string) string { return redactedValue })
@@ -268,6 +268,9 @@ func redactOversizedEncodedCandidates(value, path string, findings []Finding) (s
 	isCandidate := func(b byte) bool {
 		return b >= 'A' && b <= 'Z' || b >= 'a' && b <= 'z' || b >= '0' && b <= '9' || b == '+' || b == '/' || b == '_' || b == '-'
 	}
+	var builder strings.Builder
+	builder.Grow(len(value))
+	last := 0
 	for start := 0; start < len(value); {
 		if !isCandidate(value[start]) {
 			start++
@@ -278,14 +281,29 @@ func redactOversizedEncodedCandidates(value, path string, findings []Finding) (s
 			end++
 		}
 		if end-start > maxCandidate {
-			value = value[:start] + redactedValue + value[end:]
+			builder.WriteString(value[last:start])
+			builder.WriteString(redactedValue)
 			findings = appendFinding(findings, RuleEncodedSecret, path, 1)
-			start += len(redactedValue)
-			continue
+			last = end
 		}
 		start = end
 	}
-	return value, findings
+	if last == 0 {
+		return value, findings
+	}
+	builder.WriteString(value[last:])
+	return builder.String(), findings
+}
+
+func quotedRedactedValue(separator string) string {
+	switch {
+	case strings.Contains(separator, `"`):
+		return `"` + redactedValue + `"`
+	case strings.Contains(separator, `'`):
+		return `'` + redactedValue + `'`
+	default:
+		return redactedValue
+	}
 }
 
 func replaceMatches(value string, pattern *regexp.Regexp, ruleID, path string, findings []Finding, replace func(string) string) (string, []Finding) {
