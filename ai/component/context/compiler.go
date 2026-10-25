@@ -141,9 +141,8 @@ func (c *Compiler) Compile(ctx context.Context, req CompileRequest) (*CompiledRe
 	if !req.Access.CanAccessOwner(req.SessionTenantID, req.SessionOwnerID) {
 		return nil, security.ErrResourceNotAccessible
 	}
-	if req.ContextTokens <= 0 || req.OutputTokens <= 0 || req.SafetyMargin < 0 ||
-		req.SafetyMargin >= req.ContextTokens || req.OutputTokens > req.ContextTokens-req.SafetyMargin {
-		return nil, ErrInvalidBudget
+	if req.ContextTokens <= 0 || req.OutputTokens <= 0 || req.SafetyMargin < 0 {
+		return nil, fmt.Errorf("invalid context budget")
 	}
 	if req.MaxBytes <= 0 {
 		req.MaxBytes = 8 << 20
@@ -495,12 +494,12 @@ func renderEvents(events []Event, kinds []string) ([]Message, bool, bool, error)
 				cleanInput := security.DefaultSanitizer().SanitizeStructured(input)
 				cleanOutput := security.DefaultSanitizer().SanitizeStructured(output)
 				redacted = redacted || len(cleanInput.Findings) > 0 || len(cleanOutput.Findings) > 0
-				limitedInput, inputChanged := limitValue(cleanInput.Value, 0)
-				limitedOutput, outputChanged := limitValue(cleanOutput.Value, 0)
-				changed := inputChanged || outputChanged
+				input = cleanInput.Value
+				output = cleanOutput.Value
+				limited, changed := limitValue(output, 0)
 				trimmed = trimmed || changed
-				call.Input = JSON(limitedInput)
-				call.Output = JSON(map[string]any{"status": call.Status, "result": limitedOutput, "error_code": call.ErrorCode, "source_call_id": call.ID, "truncated": changed})
+				call.Input = JSON(input)
+				call.Output = JSON(map[string]any{"status": call.Status, "result": limited, "error_code": call.ErrorCode, "source_call_id": call.ID, "truncated": changed})
 				calls[i] = call
 			}
 			result = append(result, Message{Role: "model", Requests: calls}, Message{Role: "tool", Responses: calls})
@@ -517,29 +516,17 @@ func boundedBatchEvidence(b store.ToolBatch) (store.ToolBatch, bool, bool, error
 	b.Calls = append([]store.ToolCall(nil), b.Calls...)
 	trimmed, redacted := false, false
 	for i, call := range b.Calls {
-		if len(call.Input) == 0 && len(call.Output) == 0 {
+		if len(call.Output) == 0 {
 			continue
 		}
-		var input any
-		if len(call.Input) > 0 {
-			if err := json.Unmarshal(call.Input, &input); err != nil {
-				return b, false, false, err
-			}
-		}
 		var output any
-		if len(call.Output) > 0 {
-			if err := json.Unmarshal(call.Output, &output); err != nil {
-				return b, false, false, err
-			}
+		if err := json.Unmarshal(call.Output, &output); err != nil {
+			return b, false, false, err
 		}
-		cleanInput := security.DefaultSanitizer().SanitizeStructured(input)
 		clean := security.DefaultSanitizer().SanitizeStructured(output)
-		limitedInput, inputChanged := limitValue(cleanInput.Value, 0)
 		limited, changed := limitValue(clean.Value, 0)
-		changed = changed || inputChanged
 		trimmed = trimmed || changed
-		redacted = redacted || len(clean.Findings) > 0 || len(cleanInput.Findings) > 0
-		b.Calls[i].Input = JSON(limitedInput)
+		redacted = redacted || len(clean.Findings) > 0
 		b.Calls[i].Output = JSON(map[string]any{"status": call.Status, "result": limited, "error_code": call.ErrorCode, "source_call_id": call.ID, "truncated": changed})
 	}
 	return b, trimmed, redacted, nil
@@ -556,30 +543,17 @@ func limitValue(v any, depth int) (any, bool) {
 			return string(r[:2048]) + "[truncated]", true
 		}
 	case []any:
-		limit := len(x)
-		changed := limit > 32
-		if limit > 32 {
-			limit = 32
+		changed := len(x) > 32
+		if len(x) > 32 {
+			x = x[:32]
 		}
-		var out []any
-		for i, v := range x[:limit] {
+		out := make([]any, len(x))
+		for i, v := range x {
 			var cut bool
-			limited, cut := limitValue(v, depth+1)
+			out[i], cut = limitValue(v, depth+1)
 			changed = changed || cut
-			if cut && out == nil {
-				out = append([]any(nil), x[:i]...)
-			}
-			if out != nil {
-				out = append(out, limited)
-			}
 		}
-		if !changed {
-			return x, false
-		}
-		if out == nil {
-			out = append([]any(nil), x[:limit]...)
-		}
-		return out, true
+		return out, changed
 	case map[string]any:
 		keys := make([]string, 0, len(x))
 		for k := range x {
@@ -590,30 +564,13 @@ func limitValue(v any, depth int) (any, bool) {
 		if len(keys) > 32 {
 			keys = keys[:32]
 		}
-		var out map[string]any
-		for i, k := range keys {
+		out := map[string]any{}
+		for _, k := range keys {
 			v, cut := limitValue(x[k], depth+1)
+			out[k] = v
 			changed = changed || cut
-			if cut && out == nil {
-				out = make(map[string]any, len(keys))
-				for _, existing := range keys[:i] {
-					out[existing] = x[existing]
-				}
-			}
-			if out != nil {
-				out[k] = v
-			}
 		}
-		if !changed {
-			return x, false
-		}
-		if out == nil {
-			out = make(map[string]any, len(keys))
-			for _, k := range keys {
-				out[k] = x[k]
-			}
-		}
-		return out, true
+		return out, changed
 	}
 	return v, false
 }

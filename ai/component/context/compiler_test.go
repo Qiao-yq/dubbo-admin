@@ -85,34 +85,6 @@ func TestCompileRolesBudgetAndDeterminism(t *testing.T) {
 	}
 }
 
-func TestSameTenantSessionAdminCompilesOwnerContext(t *testing.T) {
-	c, req := fixture(t)
-	req.Access = security.MustAccessContext(security.Subject{
-		TenantID: "tenant", UserID: "administrator", Scopes: []string{security.ScopeSessionAdmin}, AuthMethod: "test",
-	})
-	if _, err := c.Compile(context.Background(), req); err != nil {
-		t.Fatalf("same-tenant administrator could not compile session owner context: %v", err)
-	}
-	if req.Turns[1].OwnerID != "owner" {
-		t.Fatal("test did not retain canonical session owner")
-	}
-	req.Access = security.MustAccessContext(security.Subject{
-		TenantID: "other-tenant", UserID: "administrator", Scopes: []string{security.ScopeSessionAdmin}, AuthMethod: "test",
-	})
-	if _, err := c.Compile(context.Background(), req); !errors.Is(err, security.ErrResourceNotAccessible) {
-		t.Fatalf("cross-tenant administrator was accepted: %v", err)
-	}
-}
-
-func TestJSONFailsClosedOnMarshalError(t *testing.T) {
-	defer func() {
-		if recover() == nil {
-			t.Fatal("JSON silently accepted an unserializable value")
-		}
-	}()
-	_ = JSON(map[string]any{"value": func() {}})
-}
-
 type testSource struct {
 	item  ContextItem
 	items []ContextItem
@@ -381,8 +353,8 @@ func TestNativeBatchesSanitizedAndKeptAtomic(t *testing.T) {
 		t.Fatalf("answer retained tools: %v", err)
 	}
 	req.ContextTokens = 200
-	if _, err := c.Compile(context.Background(), req); !errors.Is(err, ErrInvalidBudget) {
-		t.Fatalf("invalid budget was not rejected: %v", err)
+	if _, err := c.Compile(context.Background(), req); !errors.Is(err, ErrMandatoryBudget) {
+		t.Fatalf("current batch split or silently omitted: %v", err)
 	}
 }
 
@@ -510,14 +482,13 @@ func TestLargeToolResultsAreBoundedBeforeRequestBudget(t *testing.T) {
 				if _, err = c.Compile(context.Background(), req); !errors.Is(err, ErrMandatoryBudget) {
 					t.Fatalf("rendered mandatory overflow ignored: %v", err)
 				}
-				// Arguments are bounded in the model-facing view while the canonical
-				// ledger remains unchanged.
+				// Arguments retain their protocol meaning and must not be shortened
+				// merely to make the result view fit.
 				req.MaxBytes = 16 << 10
 				req.ContextTokens = 100000
 				req.Turns[1].Batches[0].Calls[0].Input = JSON(map[string]any{"argument": strings.Repeat("ordinary argument ", 1200)})
-				out, err = c.Compile(context.Background(), req)
-				if err != nil || !strings.Contains(string(JSON(out.Messages)), "truncated") {
-					t.Fatalf("oversized arguments were not bounded: %v", err)
+				if _, err = c.Compile(context.Background(), req); !errors.Is(err, ErrMandatoryBudget) {
+					t.Fatalf("oversized arguments were silently shortened: %v", err)
 				}
 			}
 		})

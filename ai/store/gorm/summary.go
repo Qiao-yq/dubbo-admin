@@ -71,8 +71,12 @@ func recordSummaryHistory(tx *gorm.DB, id string, turn uint64, status string) er
 }
 
 func (s *GormStore) validateSummarySnapshot(tx *gorm.DB, a security.AccessContext, snap store.HistorySnapshot, lock bool) error {
-	if _, err := s.findActiveSession(tx, a, snap.SessionID, lock); err != nil {
+	session, err := s.findActiveSession(tx, a, snap.SessionID, lock)
+	if err != nil {
 		return err
+	}
+	if snap.TenantID != session.TenantID || snap.OwnerID != session.OwnerID {
+		return store.ErrContextConflict
 	}
 	var current TurnModel
 	if err := tx.Where("id = ? AND session_id = ? AND completed_at IS NULL", snap.ActiveTurn, snap.SessionID).First(&current).Error; err != nil {
@@ -105,6 +109,12 @@ func (s *GormStore) OpenHistorySnapshot(ctx context.Context, a security.AccessCo
 		return snap, store.ErrContextConflict
 	}
 	err := s.db.WithContext(normalizeContext(ctx)).Transaction(func(tx *gorm.DB) error {
+		session, err := s.findActiveSession(tx, a, id, true)
+		if err != nil {
+			return err
+		}
+		snap.TenantID = session.TenantID
+		snap.OwnerID = session.OwnerID
 		if err := s.validateSummarySnapshot(tx, a, snap, true); err != nil {
 			return err
 		}

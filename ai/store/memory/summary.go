@@ -68,6 +68,10 @@ func (m *MemoryStore) validateSummarySnapshotLocked(a security.AccessContext, sn
 	if snap.Upper > uint64(len(m.summaryHistory[snap.SessionID])) || snap.Target > snap.Upper {
 		return store.ErrContextConflict
 	}
+	session := m.sessions[snap.SessionID]
+	if snap.TenantID != session.TenantID || snap.OwnerID != session.OwnerID {
+		return store.ErrContextConflict
+	}
 	return nil
 }
 
@@ -84,12 +88,13 @@ func (m *MemoryStore) OpenHistorySnapshot(ctx context.Context, a security.Access
 	if err := m.validateSessionLocked(a, id); err != nil {
 		return snap, err
 	}
+	session := m.sessions[id]
 	h := m.history[id]
 	if h == nil || h.active[active] == nil {
 		return snap, store.ErrTurnNotFound
 	}
 	entries := m.summaryHistory[id]
-	snap = store.HistorySnapshot{SessionID: id, ActiveTurn: active, Count: len(entries)}
+	snap = store.HistorySnapshot{SessionID: id, TenantID: session.TenantID, OwnerID: session.OwnerID, ActiveTurn: active, Count: len(entries)}
 	if len(entries) > 0 {
 		snap.Upper = entries[len(entries)-1].Sequence
 	}
