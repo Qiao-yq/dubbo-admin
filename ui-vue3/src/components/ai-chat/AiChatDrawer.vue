@@ -164,6 +164,7 @@ const props = withDefaults(
     service: ChatService<unknown>
     // Must return JSON-serializable data; the drawer snapshots it for retries.
     collectContext?: () => unknown
+    formatError?: (error: unknown) => string | undefined
     labels?: Partial<AIChatLabels>
     suggestions?: ChatSuggestion[]
     drawerWidth?: string | number
@@ -171,6 +172,7 @@ const props = withDefaults(
   {
     open: false,
     collectContext: undefined,
+    formatError: undefined,
     labels: () => ({}),
     suggestions: () => [],
     drawerWidth: 600
@@ -179,6 +181,7 @@ const props = withDefaults(
 
 const emit = defineEmits<{
   (event: 'update:open', value: boolean): void
+  (event: 'session-changed'): void
 }>()
 
 const resolvedLabels = computed<AIChatLabels>(() => ({
@@ -297,12 +300,14 @@ async function fetchSessionInfo(sessionId: string) {
 
 // 删除会话
 async function deleteSession(sessionId: string) {
+  if (isLoading.value) return
   if (!props.service.deleteSession) return
   try {
     await props.service.deleteSession(sessionId)
     if (currentSessionId.value === sessionId) {
       currentSessionId.value = ''
       messages.value = []
+      resetRequest()
     }
     await fetchSessions()
     message.success(resolvedLabels.value.sessionDeleted)
@@ -371,6 +376,7 @@ async function sendMessage(isRetry = false) {
   lastUserMessage.value = inputMsg
   lastRequestContext.value = context
   lastIdempotencyKey.value = idempotencyKey
+  isLoading.value = true
 
   // 如果没有当前会话ID，先创建一个新会话
   if (!currentSessionId.value) {
@@ -385,11 +391,21 @@ async function sendMessage(isRetry = false) {
   let userMessage: ChatMessage
   if (isRetry) {
     const existing = [...messages.value].reverse().find((item) => item.role === 'user')
-    userMessage = existing || { id: Date.now().toString(), content: inputMsg, role: 'user', timestamp: Date.now() }
+    userMessage = existing || {
+      id: Date.now().toString(),
+      content: inputMsg,
+      role: 'user',
+      timestamp: Date.now()
+    }
     userMessage.content = inputMsg
     if (!existing) messages.value.push(userMessage)
   } else {
-    userMessage = { id: Date.now().toString(), content: inputMsg, role: 'user', timestamp: Date.now() }
+    userMessage = {
+      id: Date.now().toString(),
+      content: inputMsg,
+      role: 'user',
+      timestamp: Date.now()
+    }
     messages.value.push(userMessage)
   }
 
@@ -616,11 +632,12 @@ async function sendMessage(isRetry = false) {
     console.error('发送消息失败:', error)
 
     // 处理错误响应
-    let errorMessage = resolvedLabels.value.requestFailed
-    if (error.response?.data) {
+    const formattedError = props.formatError?.(error)
+    let errorMessage = formattedError || resolvedLabels.value.requestFailed
+    if (!formattedError && error.response?.data) {
       // JSON 格式的错误响应，直接使用 message 字段
       errorMessage = error.response.data.message || error.response.data.error || errorMessage
-    } else if (error.message) {
+    } else if (!formattedError && error.message) {
       // 普通的 Error 对象
       if (error.message.includes('Failed to fetch') || error.message.includes('NetworkError')) {
         errorMessage = resolvedLabels.value.networkError
@@ -660,8 +677,13 @@ function clearHistory() {
 
 // 处理新对话按钮点击
 async function handleNewChat() {
+  if (isLoading.value) return
+  isLoading.value = true
   // 创建新对话
-  await createNewSession()
+  const session = await createNewSession()
+  isLoading.value = false
+  if (!session) return
+  resetRequest()
   // 清空使用情况信息
   usageInfo.value = null
   message.success(resolvedLabels.value.newChatCreated)
@@ -702,11 +724,13 @@ onMounted(() => {
 
 // 加载选定的会话
 async function loadSession(sessionId: string) {
+  if (isLoading.value) return
   try {
     isLoading.value = true
     const sessionInfo = await fetchSessionInfo(sessionId)
     if (sessionInfo) {
       currentSessionId.value = sessionId
+      resetRequest()
       messages.value = sessionInfo.messages || []
       historyModalVisible.value = false
       // 加载会话后滚动到底部
@@ -718,6 +742,13 @@ async function loadSession(sessionId: string) {
   } finally {
     isLoading.value = false
   }
+}
+
+function resetRequest() {
+  lastUserMessage.value = ''
+  lastRequestContext.value = undefined
+  lastIdempotencyKey.value = ''
+  emit('session-changed')
 }
 </script>
 
