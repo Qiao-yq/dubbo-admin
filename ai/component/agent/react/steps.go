@@ -30,6 +30,7 @@ import (
 	"dubbo-admin-ai/runtime"
 	"dubbo-admin-ai/schema"
 	"dubbo-admin-ai/security"
+	"dubbo-admin-ai/store"
 
 	"github.com/firebase/genkit/go/ai"
 )
@@ -180,6 +181,17 @@ func (ra *ReActAgent) runIteration(ctx context.Context, chans *agent.Channels, h
 		runtime.GetLogger().Debug("react: compiled context", "report", compiled.Report)
 		if _, err := ra.messageStore.IsTurnEmpty(ctx, state.access, s.Session, state.turnID); err != nil {
 			return false, err
+		}
+		if ra.memoryStore != nil {
+			if err := ra.memoryStore.ValidateMemoryDependencies(ctx, state.access, s.Session, compiled.Dependencies); err != nil {
+				return false, err
+			}
+			state.usedMemory = store.MergeMemoryDependencies(state.usedMemory, compiled.Dependencies)
+			if len(state.usedMemory) > 0 {
+				if err := ra.memoryStore.RecordTurnMemoryDependencies(ctx, state.access, s.Session, state.turnID, state.usedMemory); err != nil {
+					return false, err
+				}
+			}
 		}
 	} else {
 		executeOptions = []ai.PromptExecuteOption{ai.WithMessages(modelMessages...)}

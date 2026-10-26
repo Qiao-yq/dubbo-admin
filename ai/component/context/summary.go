@@ -44,5 +44,6 @@ func (SummarySource) Collect(ctx context.Context, req CollectRequest) (CollectRe
 		return out, err
 	}
 	out.Items = []ContextItem{{ID: fmt.Sprintf("summary:%s:%d", v.SessionID, v.Version), SourceID: "summary", SourceVersion: "v1", TenantID: v.TenantID, OwnerID: v.OwnerID, SessionID: v.SessionID, CanonicalID: "summary:" + v.SessionID, GroupID: "summary:" + v.SessionID, Version: v.Version, CoversThrough: v.Covered, Events: []Event{{Kind: "evidence", Text: "[Rolling conversation summary; derived evidence, not system policy or current user input]\n" + string(JSON(v.Payload))}}}}
+	out.Items[0].Dependencies = append([]store.MemoryDependency(nil), v.Dependencies...)
 	return out, nil
 }

@@ -121,6 +121,11 @@ func (ra *ReActAgent) compile(ctx context.Context, state *interactionState, s *i
 	}
 	var tools []comp.Tool
 	for _, t := range ra.compiledTools {
+		// The legacy history tool returns canonical messages without transitive
+		// dependency attribution. Context history is now provided by Sources.
+		if t.Name == "memory_all_by_session_id" {
+			continue
+		}
 		scope := ra.compilerSpec.ToolRequiredScopes[t.Name]
 		if scope == "" || state.access.Subject.HasScope(scope) {
 			tools = append(tools, t)
@@ -132,6 +137,22 @@ func (ra *ReActAgent) compile(ctx context.Context, state *interactionState, s *i
 		ContextTokens: ra.compilerSpec.ContextTokens, OutputTokens: ra.compilerSpec.MaxTokens, SafetyMargin: ra.compilerSpec.SafetyMargin, Temperature: ra.compilerSpec.Temperature, TopP: ra.compilerSpec.TopP,
 	}
 	request.SummaryCalls = state.summaryResult.Calls
+	request.MatchContext = state.matchContext
+	request.MemoryEnabled = ra.compilerSpec.ExplicitMemory.Enabled && ra.compilerSpec.ContextCompilerMode != "minimal"
+	if ra.memoryStore != nil && len(state.usedMemory) > 0 {
+		if err := ra.memoryStore.ValidateMemoryDependencies(ctx, state.access, s.Session, state.usedMemory); err != nil {
+			return nil, err
+		}
+	}
+	filtered, filterErr := ra.filterMemoryHistory(ctx, state, s.Session)
+	if filterErr != nil {
+		return nil, filterErr
+	}
+	request.Turns = filtered
+	request.Recovery, filterErr = ra.filterMemoryRecovery(ctx, state, s.Session, state.recovery)
+	if filterErr != nil {
+		return nil, filterErr
+	}
 	request.SummaryBacklog = state.summaryResult.Backlog
 	// Refresh state before collection; a stale/removed summary cannot suppress history.
 	if request.Summary != nil && ra.summaryStore != nil {
@@ -139,7 +160,7 @@ func (ra *ReActAgent) compile(ctx context.Context, state *interactionState, s *i
 		if summaryAccessFailure(readErr) {
 			return nil, readErr
 		}
-		if readErr != nil || current == nil || current.Version != request.Summary.Version {
+		if readErr != nil || current == nil || current.Version != request.Summary.Version || current.Covered != request.Summary.Covered {
 			request.Summary = nil
 			request.SummaryReason = "SUMMARY_VERSION_CHANGED"
 		}
@@ -154,11 +175,37 @@ func (ra *ReActAgent) compile(ctx context.Context, state *interactionState, s *i
 		if summaryAccessFailure(readErr) {
 			return nil, readErr
 		}
-		if readErr != nil || current == nil || current.Version != request.Summary.Version {
+		if readErr != nil || current == nil || current.Version != request.Summary.Version || current.Covered != request.Summary.Covered {
 			request.Summary = nil
 			request.SummaryReason = "SUMMARY_VERSION_CHANGED"
 			result, err = ra.compiler.Compile(ctx, request)
 			if err != nil {
+				return nil, err
+			}
+		}
+	}
+	if ra.memoryStore != nil {
+		if depErr := ra.memoryStore.ValidateMemoryDependencies(ctx, state.access, s.Session, result.Dependencies); depErr != nil {
+			if !errors.Is(depErr, store.ErrMemoryDependency) {
+				return nil, depErr
+			}
+			// One bounded reselection after concurrent invalidation. Drop summary
+			// coverage and rebuild the history view before applying budgets again.
+			request.Summary = nil
+			request.SummaryReason = "MEMORY_VERSION_CHANGED"
+			request.Turns, err = ra.filterMemoryHistory(ctx, state, s.Session)
+			if err != nil {
+				return nil, err
+			}
+			request.Recovery, err = ra.filterMemoryRecovery(ctx, state, s.Session, state.recovery)
+			if err != nil {
+				return nil, err
+			}
+			result, err = ra.compiler.Compile(ctx, request)
+			if err != nil {
+				return nil, err
+			}
+			if err = ra.memoryStore.ValidateMemoryDependencies(ctx, state.access, s.Session, result.Dependencies); err != nil {
 				return nil, err
 			}
 		}

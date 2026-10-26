@@ -40,6 +40,7 @@ const defaultContextWindowTurns = 10
 // iteration) or answers directly. The model settings below configure that one
 // call, so the config is flat — there is no multi-stage pipeline to describe.
 type AgentSpec struct {
+	ExplicitMemory       MemoryConfig      `yaml:"explicit_memory"`
 	ConversationSummary  summary.Config    `yaml:"conversation_summary"`
 	ContextCompilerMode  string            `yaml:"context_compiler_mode"`
 	ContextTokens        int               `yaml:"context_tokens"`
@@ -72,6 +73,7 @@ type AgentSpec struct {
 // ApplyDefaults fills values that are optional when AgentSpec is constructed
 // directly in Go. Schema-loaded configurations already receive these defaults.
 func (c *AgentSpec) ApplyDefaults() {
+	c.ExplicitMemory.Defaults()
 	c.ConversationSummary.Defaults()
 	if c.ContextCompilerMode == "" {
 		c.ContextCompilerMode = "enabled"
@@ -101,6 +103,9 @@ func (c *AgentSpec) ApplyDefaults() {
 
 // Validate validates the configuration.
 func (c *AgentSpec) Validate() error {
+	if err := c.ExplicitMemory.Validate(); err != nil {
+		return err
+	}
 	if err := c.ConversationSummary.Validate(); err != nil {
 		return fmt.Errorf("invalid conversation_summary: %w", err)
 	}

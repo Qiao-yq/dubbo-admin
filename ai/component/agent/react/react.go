@@ -46,6 +46,7 @@ import (
 // per-interaction state lives in the Channels/history reached through Interact,
 // not on the agent.
 type ReActAgent struct {
+	memoryStore      conversationstore.ExplicitMemoryStore
 	summaryService   *summary.Service
 	summaryStore     conversationstore.SummaryStore
 	summaryCompiler  *compcontext.Compiler
@@ -81,6 +82,8 @@ var ErrAgentStopping = errors.New("agent is stopping")
 const persistenceTimeout = 30 * time.Second
 
 type interactionState struct {
+	matchContext  conversationstore.MatchContext
+	usedMemory    []conversationstore.MemoryDependency
 	summaryResult summary.Result
 	turns         []conversationstore.TurnContext
 	sessionTenant string
@@ -145,6 +148,9 @@ func NewReActAgentWithStore(g *genkit.Genkit, messageStore conversationstore.Mes
 		return nil, err
 	}
 	if err := ra.initSummary(spec); err != nil {
+		return nil, err
+	}
+	if err := ra.initMemory(spec); err != nil {
 		return nil, err
 	}
 	return ra, nil
@@ -391,6 +397,10 @@ func (ra *ReActAgent) newInteraction(parent context.Context, input *schema.UserI
 	if input == nil {
 		return nil, nil, errors.New("nil input")
 	}
+	match, matchErr := conversationstore.NormalizeMatchContext(input.MatchContext)
+	if matchErr != nil {
+		return nil, nil, matchErr
+	}
 	if ra.messageStore != nil {
 		access, err := security.AccessContextFromContext(parent)
 		if err != nil {
@@ -444,6 +454,7 @@ func (ra *ReActAgent) newInteraction(parent context.Context, input *schema.UserI
 			return nil, nil, fmt.Errorf("failed to load conversation context: %w", err)
 		}
 		state := &interactionState{access: access, turnID: turnID, interactionID: interactionID, prepared: isPrepared, messages: messages, persistCtx: persistCtx, persistCancel: persistCancel}
+		state.matchContext = match
 		if ra.compiler != nil {
 			state.templateRef, err = ra.compilationStore.PinTemplate(parent, access, sessionID, ra.templateRef)
 			if err == nil {
