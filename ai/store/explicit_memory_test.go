@@ -77,3 +77,44 @@ func TestMemoryCanonicalIdentityAndQuota(t *testing.T) {
 		t.Fatal("returned pointer mutated storage", items, err)
 	}
 }
+
+func TestExpiredMemoryRemainsDeletableWhenItConsumesQuota(t *testing.T) {
+	a := testutils.TestAccess()
+	quota := store.DefaultQuotaPolicy()
+	quota.ExplicitMemory = store.MemoryPolicy{MaxRecords: 1}
+	s := memorystore.NewMemoryStoreWithPolicy(quota)
+	ctx := context.Background()
+	settings, err := s.GetMemorySettings(ctx, a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expires := time.Now().Add(20 * time.Millisecond)
+	w := memoryWriteForTest(settings)
+	w.ExpiresAt = &expires
+	first, err := s.SaveMemory(ctx, a, w)
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(40 * time.Millisecond)
+	page, err := s.ListMemories(ctx, a, "", 32)
+	if err != nil || len(page.Records) != 1 {
+		t.Fatalf("expired record missing from list: %#v, %v", page, err)
+	}
+	w.FactKey = "response.style"
+	w.Value = "brief"
+	nextExpiry := time.Now().Add(time.Hour)
+	w.ExpiresAt = &nextExpiry
+	if _, err := s.SaveMemory(ctx, a, w); !errors.Is(err, store.ErrResourceExhausted) {
+		t.Fatalf("expired record did not consume quota: %v", err)
+	}
+	if err := s.DeleteMemory(ctx, a, first.ID, store.MemoryMutation{Generation: settings.Generation, StateVersion: settings.StateVersion, Version: first.Version}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SaveMemory(ctx, a, w); err != nil {
+		t.Fatalf("quota not released after deleting expired record: %v", err)
+	}
+}
+
+func memoryWriteForTest(settings store.MemorySettings) store.MemoryWrite {
+	return store.MemoryWrite{Generation: settings.Generation, StateVersion: settings.StateVersion, ScopeType: "user", MemoryType: "preference", FactKey: "response.language", Value: "Chinese"}
+}

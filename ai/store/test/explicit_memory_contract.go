@@ -30,6 +30,56 @@ func memoryWrite(settings store.MemorySettings) store.MemoryWrite {
 
 func RunExplicitMemoryContractTests(t *testing.T, newStore func() store.BackendStore) {
 	runMemoryMutationRaces(t, newStore)
+	t.Run("expired records remain manageable", func(t *testing.T) {
+		ctx := context.Background()
+		a := contractAccess
+		s := newStore()
+		mem := s.(store.ExplicitMemoryStore)
+		settings, err := mem.GetMemorySettings(ctx, a)
+		if err != nil {
+			t.Fatal(err)
+		}
+		expires := time.Now().Add(20 * time.Millisecond)
+		w := memoryWrite(settings)
+		w.ExpiresAt = &expires
+		if _, err := mem.SaveMemory(ctx, a, w); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(40 * time.Millisecond)
+		page, err := mem.ListMemories(ctx, a, "", 32)
+		if err != nil || len(page.Records) != 1 || page.Records[0].ExpiresAt == nil {
+			t.Fatalf("expired record missing from management list: %#v, %v", page, err)
+		}
+		items, _, err := mem.RecallMemories(ctx, a, store.MatchContext{}, 32, 16384)
+		if err != nil || len(items) != 0 {
+			t.Fatalf("expired record was recalled: %#v, %v", items, err)
+		}
+	})
+	t.Run("expired source is hidden from management", func(t *testing.T) {
+		ctx := context.Background()
+		a := contractAccess
+		s := newStore()
+		mem := s.(store.ExplicitMemoryStore)
+		now := time.Now()
+		sourceExpiry := now.Add(20 * time.Millisecond)
+		if err := s.Create(ctx, a, &store.Session{ID: "expired-memory-source", TenantID: a.Subject.TenantID, OwnerID: a.Subject.UserID, Version: 1, Status: store.SessionStatusActive, CreatedAt: now, UpdatedAt: now, ExpiresAt: &sourceExpiry}); err != nil {
+			t.Fatal(err)
+		}
+		settings, err := mem.GetMemorySettings(ctx, a)
+		if err != nil {
+			t.Fatal(err)
+		}
+		w := memoryWrite(settings)
+		w.SourceSessionID = "expired-memory-source"
+		if _, err := mem.SaveMemory(ctx, a, w); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(40 * time.Millisecond)
+		page, err := mem.ListMemories(ctx, a, "", 32)
+		if err != nil || len(page.Records) != 1 || page.Records[0].Value != "" || page.Records[0].Status != "source_unavailable" {
+			t.Fatalf("source-expired memory exposed with content: %#v, %v", page, err)
+		}
+	})
 	for _, scenario := range []string{"identity", "lifecycle", "clear race", "source", "summary rebuild", "fragment invalidation", "summary commit race"} {
 		t.Run(scenario, func(t *testing.T) {
 			ctx := context.Background()
