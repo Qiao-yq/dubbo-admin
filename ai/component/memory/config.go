@@ -18,6 +18,7 @@
 package memory
 
 import (
+	"dubbo-admin-ai/store"
 	"fmt"
 	"strings"
 )
@@ -29,13 +30,14 @@ const (
 )
 
 type MemorySpec struct {
-	Backend    string         `yaml:"backend"`
-	HistoryKey HistoryKey     `yaml:"history_key"` // History key name
-	MaxTurns   int            `yaml:"max_turns"`   // Maximum conversation turns
-	Database   *DatabaseSpec  `yaml:"database"`
-	Quota      QuotaSpec      `yaml:"quota"`
-	Lifecycle  LifecycleSpec  `yaml:"lifecycle"`
-	UsageAudit UsageAuditSpec `yaml:"usage_audit"`
+	ExplicitMemory store.MemoryPolicy `yaml:"explicit_memory"`
+	Backend        string             `yaml:"backend"`
+	HistoryKey     HistoryKey         `yaml:"history_key"` // History key name
+	MaxTurns       int                `yaml:"max_turns"`   // Maximum conversation turns
+	Database       *DatabaseSpec      `yaml:"database"`
+	Quota          QuotaSpec          `yaml:"quota"`
+	Lifecycle      LifecycleSpec      `yaml:"lifecycle"`
+	UsageAudit     UsageAuditSpec     `yaml:"usage_audit"`
 }
 
 type QuotaSpec struct {
@@ -78,6 +80,7 @@ func DefaultMemorySpec() *MemorySpec {
 }
 
 func (s *MemorySpec) applyPolicyDefaults() {
+	s.ExplicitMemory = s.ExplicitMemory.WithDefaults()
 	if s.Quota.MaxSessionsPerTenant == 0 {
 		s.Quota.MaxSessionsPerTenant = 1000
 	}
@@ -120,6 +123,9 @@ func (s *MemorySpec) applyPolicyDefaults() {
 }
 
 func (s MemorySpec) Validate() error {
+	if err := s.ExplicitMemory.Validate(); err != nil {
+		return err
+	}
 	s.applyPolicyDefaults()
 	backend := strings.ToLower(strings.TrimSpace(s.Backend))
 	if backend == "" {

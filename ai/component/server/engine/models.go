@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"dubbo-admin-ai/store"
 	"time"
 
 	"github.com/google/uuid"
@@ -45,8 +46,9 @@ func NewAPIErrorResponse(code, message string) *Response {
 // execution, update hashChatRequest's versioned projection and its tests so
 // different requests cannot replay the same interaction result.
 type ChatRequest struct {
-	Message   string `json:"message" binding:"required"`   // User message
-	SessionID string `json:"sessionID" binding:"required"` // Session ID
+	MatchContext store.MatchContext `json:"matchContext,omitempty"`
+	Message      string             `json:"message" binding:"required"`   // User message
+	SessionID    string             `json:"sessionID" binding:"required"` // Session ID
 }
 
 // generateRequestID generates a request ID

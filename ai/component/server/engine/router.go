@@ -82,6 +82,13 @@ func (r *Router) setupRoutes(corsOrigins []string) {
 	{
 		// Chat endpoints
 		v1.POST("/chat/stream", r.handler.StreamChat) // Streaming chat
+		v1.GET("/memories", r.handler.ListMemories)
+		v1.POST("/memories", r.handler.SaveMemory)
+		v1.PUT("/memories/:memoryId", r.handler.SaveMemory)
+		v1.DELETE("/memories/:memoryId", r.handler.DeleteMemory)
+		v1.POST("/memories/clear", r.handler.ClearMemories)
+		v1.GET("/memory-settings", r.handler.GetMemorySettings)
+		v1.PUT("/memory-settings", r.handler.ChangeMemorySettings)
 
 		// Session management
 		v1.POST("/sessions", r.handler.CreateSession)              // Create session

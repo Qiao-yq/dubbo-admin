@@ -13,6 +13,15 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "explicit_memory": {
+          "type": "object", "additionalProperties": false,
+          "properties": {
+            "max_records": { "type": "integer", "minimum": 1, "maximum": 256, "default": 128 },
+            "max_value_bytes": { "type": "integer", "minimum": 1, "maximum": 8192, "default": 4096 },
+            "max_user_bytes": { "type": "integer", "minimum": 1, "maximum": 2097152, "default": 524288 },
+            "max_ttl_seconds": { "type": "integer", "minimum": 1, "maximum": 157680000, "default": 31536000 }
+          }
+        },
         "backend": {
           "type": "string",
           "enum": ["memory", "gorm"],
