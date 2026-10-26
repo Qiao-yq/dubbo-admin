@@ -58,6 +58,7 @@ type sessionHistory struct {
 
 // MemoryStore is the in-process implementation of the conversation Store.
 type MemoryStore struct {
+	explicitMemory     map[string]conversationstore.MemoryLedger
 	summaryTurns       map[string]map[uint64]uint64
 	summaryChecks      map[string]map[string]conversationstore.SummaryInspection
 	summaryHistory     map[string][]conversationstore.HistoryEntry
@@ -492,6 +493,7 @@ func afterCleanupCursor(at time.Time, tenant, id string, cursor conversationstor
 }
 
 func (m *MemoryStore) enqueueCleanupLocked(session conversationstore.Session) {
+	m.deleteSessionMemoriesLocked(session)
 	canonicalID := "session:" + session.ID
 	if _, exists := m.cleanupJobs[canonicalID]; exists {
 		return
@@ -1041,6 +1043,12 @@ func messageBatchUsage(messages []*ai.Message) (int, int64, error) {
 
 func (m *MemoryStore) sessionBytesLocked(sessionID string) int64 {
 	total := int64(len(m.summaryChecks[sessionID])) * conversationstore.SummaryInspectionBytes
+	for _, entry := range m.summaryHistory[sessionID] {
+		if len(entry.Dependencies) > 0 {
+			b, _ := json.Marshal(entry.Dependencies)
+			total += int64(len(b))
+		}
+	}
 	if v, ok := m.summaries[sessionID]; ok {
 		b, _ := json.Marshal(v)
 		total += int64(len(b))
@@ -1057,9 +1065,18 @@ func (m *MemoryStore) sessionBytesLocked(sessionID string) int64 {
 	}
 	turns := append([]*turn(nil), history.history...)
 	for _, active := range history.active {
+		// Reserve the terminal journal's dependency copy before completion.
+		if len(active.dependencies) > 0 {
+			b, _ := json.Marshal(active.dependencies)
+			total += int64(len(b))
+		}
 		turns = append(turns, active)
 	}
 	for _, current := range turns {
+		if len(current.dependencies) > 0 {
+			b, _ := json.Marshal(current.dependencies)
+			total += int64(len(b))
+		}
 		for _, message := range current.messages() {
 			payload, _ := json.Marshal(message)
 			total += int64(len(payload))
@@ -1075,6 +1092,11 @@ func (m *MemoryStore) sessionBytesLocked(sessionID string) int64 {
 
 func (m *MemoryStore) tenantBytesLocked(tenantID string) int64 {
 	var total int64
+	for _, l := range m.explicitMemory {
+		if l.TenantID == tenantID {
+			total += conversationstore.MemoryContentBytes(l)
+		}
+	}
 	for id, session := range m.sessions {
 		if session.TenantID == tenantID {
 			total += m.sessionBytesLocked(id)
@@ -1085,6 +1107,9 @@ func (m *MemoryStore) tenantBytesLocked(tenantID string) int64 {
 
 func (m *MemoryStore) entityCountLocked() int {
 	total := len(m.sessions) + len(m.interactions) + len(m.toolBatches)
+	for _, l := range m.explicitMemory {
+		total += 1 + len(l.Records)
+	}
 	total += len(m.summaries)
 	for _, checks := range m.summaryChecks {
 		total += len(checks)

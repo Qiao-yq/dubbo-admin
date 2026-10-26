@@ -187,6 +187,20 @@ func (s *GormStore) readSummaryBatch(tx *gorm.DB, a security.AccessContext, req 
 			return store.SummaryBatch{}, err
 		}
 	}
+	if err := s.validateMemoryDependencies(tx, a, row.SessionID, entry.Dependencies, false); err != nil {
+		if !errors.Is(err, store.ErrMemoryDependency) {
+			return store.SummaryBatch{}, err
+		}
+		entry.Dependencies = nil
+		kept := messages[:0]
+		for _, message := range messages {
+			if message.Role == "user" {
+				kept = append(kept, message)
+			}
+		}
+		messages = kept
+		batches = nil
+	}
 	classes := map[int]string{}
 	var roles []string
 	for _, m := range messages {
@@ -326,6 +340,14 @@ func (s *GormStore) GetSummary(ctx context.Context, a security.AccessContext, id
 		}
 		var err error
 		v, err = readSummary(tx, id)
+		if err == nil {
+			if depErr := s.validateMemoryDependencies(tx, a, id, v.Dependencies, false); depErr != nil {
+				if !errors.Is(depErr, store.ErrMemoryDependency) {
+					return depErr
+				}
+				v = store.RebuildSummary(*v)
+			}
+		}
 		return err
 	})
 	return v, err
@@ -344,6 +366,18 @@ func (s *GormStore) CommitSummary(ctx context.Context, a security.AccessContext,
 		if err != nil && !errors.Is(err, store.ErrSummaryNotFound) {
 			return err
 		}
+		physicalOld := old
+		if old != nil {
+			if err := s.validateMemoryDependencies(tx, a, c.Value.SessionID, old.Dependencies, true); err != nil {
+				if !errors.Is(err, store.ErrMemoryDependency) {
+					return err
+				}
+				old = store.RebuildSummary(*old)
+			}
+		}
+		if err := s.validateMemoryDependencies(tx, a, c.Value.SessionID, c.Value.Dependencies, true); err != nil {
+			return err
+		}
 		if err := store.ValidateSummaryCommit(a, c, old, batch); err != nil {
 			return err
 		}
@@ -352,8 +386,8 @@ func (s *GormStore) CommitSummary(ctx context.Context, a security.AccessContext,
 			return err
 		}
 		delta := int64(len(data))
-		if old != nil {
-			raw, _ := json.Marshal(old)
+		if physicalOld != nil {
+			raw, _ := json.Marshal(physicalOld)
 			delta -= int64(len(raw))
 		}
 		if err := s.reserveToolBytes(tx, c.Value.TenantID, c.Value.SessionID, delta); err != nil {

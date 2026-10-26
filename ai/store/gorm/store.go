@@ -20,6 +20,7 @@ package gormstore
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -107,6 +108,7 @@ func (s *GormStore) Migrate(ctx context.Context) error {
 	}
 	db := s.db.WithContext(normalizeContext(ctx))
 	if err := db.AutoMigrate(
+		&MemoryLedgerModel{},
 		&HistoryEntryModel{}, &SummaryModel{},
 		&ToolBatchModel{},
 		&SessionModel{}, &TurnModel{}, &MessageModel{}, &InteractionModel{},
@@ -224,7 +226,19 @@ func (s *GormStore) Migrate(ctx context.Context) error {
 			if err := tx.Model(&SummaryModel{}).Select("COALESCE(SUM(LENGTH(payload)),0)").Where("session_id = ?", sessions[i].ID).Scan(&summaryBytes).Error; err != nil {
 				return err
 			}
-			storedBytes := messageBytes + resultBytes + toolBytes + summaryBytes
+			var turnDependencyBytes, journalDependencyBytes int64
+			if err := tx.Model(&TurnModel{}).Select("COALESCE(SUM(LENGTH(dependencies)),0)").Where("session_id = ?", sessions[i].ID).Scan(&turnDependencyBytes).Error; err != nil {
+				return err
+			}
+			if err := tx.Model(&HistoryEntryModel{}).Select("COALESCE(SUM(LENGTH(dependencies)),0)").Where("session_id = ?", sessions[i].ID).Scan(&journalDependencyBytes).Error; err != nil {
+				return err
+			}
+			// Active Turns prepay their future terminal-journal copy.
+			var activeDependencyBytes int64
+			if err := tx.Model(&TurnModel{}).Select("COALESCE(SUM(LENGTH(dependencies)),0)").Where("session_id = ? AND completed_at IS NULL", sessions[i].ID).Scan(&activeDependencyBytes).Error; err != nil {
+				return err
+			}
+			storedBytes := messageBytes + resultBytes + toolBytes + summaryBytes + turnDependencyBytes + journalDependencyBytes + activeDependencyBytes
 			if sessions[i].Status == conversationstore.SessionStatusDeleted {
 				storedBytes = 0
 			}
@@ -237,6 +251,23 @@ func (s *GormStore) Migrate(ctx context.Context) error {
 			}
 			current.bytes += storedBytes
 			byTenant[sessions[i].TenantID] = current
+		}
+		var memories []MemoryLedgerModel
+		if err := tx.Select("tenant_id, payload").Find(&memories).Error; err != nil {
+			return err
+		}
+		for _, row := range memories {
+			var ledger conversationstore.MemoryLedger
+			if err := json.Unmarshal(row.Payload, &ledger); err != nil {
+				return err
+			}
+			contentBytes := conversationstore.MemoryContentBytes(ledger)
+			if err := tx.Model(&MemoryLedgerModel{}).Where("id = ?", row.ID).Update("stored_bytes", contentBytes).Error; err != nil {
+				return err
+			}
+			current := byTenant[row.TenantID]
+			current.bytes += contentBytes
+			byTenant[row.TenantID] = current
 		}
 		if err := tx.Model(&TenantUsageModel{}).Where("1 = 1").Updates(map[string]any{"session_count": 0, "stored_bytes": 0}).Error; err != nil {
 			return err
@@ -386,7 +417,7 @@ func (s *GormStore) Delete(ctx context.Context, access security.AccessContext, s
 		if _, err := s.findActiveSession(tx, access, sessionID, true); err != nil {
 			return err
 		}
-		return markSessionForDeletion(tx, sessionID, access.Subject.TenantID, time.Now())
+		return s.markSessionForDeletion(tx, sessionID, access.Subject.TenantID, time.Now())
 	})
 }
 
@@ -431,7 +462,7 @@ func (s *GormStore) DeleteExpired(ctx context.Context, access security.AccessCon
 					continue
 				}
 				if current.Status == conversationstore.SessionStatusActive {
-					if err := markSessionForDeletion(tx, current.ID, current.TenantID, now); err != nil {
+					if err := s.markSessionForDeletion(tx, current.ID, current.TenantID, now); err != nil {
 						return err
 					}
 				}
@@ -504,7 +535,7 @@ func (s *GormStore) DeleteExpiredPage(ctx context.Context, access security.Acces
 				return nil
 			}
 			if current.Status == conversationstore.SessionStatusActive {
-				if err := markSessionForDeletion(tx, current.ID, current.TenantID, now); err != nil {
+				if err := s.markSessionForDeletion(tx, current.ID, current.TenantID, now); err != nil {
 					return err
 				}
 			}
@@ -520,7 +551,14 @@ func (s *GormStore) DeleteExpiredPage(ctx context.Context, access security.Acces
 	return deleted, next, nil
 }
 
-func markSessionForDeletion(tx *gorm.DB, sessionID, tenantID string, now time.Time) error {
+func (s *GormStore) markSessionForDeletion(tx *gorm.DB, sessionID, tenantID string, now time.Time) error {
+	var source SessionModel
+	if err := tx.Where("id = ? AND tenant_id = ?", sessionID, tenantID).First(&source).Error; err != nil {
+		return err
+	}
+	if err := s.deleteSessionMemories(tx, source); err != nil {
+		return err
+	}
 	result := tx.Model(&SessionModel{}).Where("id = ? AND status = ?", sessionID, conversationstore.SessionStatusActive).Updates(map[string]any{
 		"status": conversationstore.SessionStatusDeletionPending, "version": gorm.Expr("version + 1"),
 		"updated_at": now, "active_interaction_id": nil,

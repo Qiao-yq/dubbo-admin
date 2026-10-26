@@ -31,6 +31,7 @@ func DerivedArtifactRetryAt(failedAt time.Time, attempt uint32) time.Time {
 }
 
 type QuotaPolicy struct {
+	ExplicitMemory       MemoryPolicy
 	MaxSessionsPerTenant int
 	MaxTurnsPerSession   int
 	MaxEventsPerTurn     int
@@ -57,6 +58,7 @@ func DefaultQuotaPolicy() QuotaPolicy {
 // configuration requires positive values and applies defaults to omitted fields
 // before decoding; see memory.schema.json.
 func (p QuotaPolicy) WithDefaults() QuotaPolicy {
+	p.ExplicitMemory = p.ExplicitMemory.WithDefaults()
 	defaults := DefaultQuotaPolicy()
 	if p.MaxSessionsPerTenant <= 0 {
 		p.MaxSessionsPerTenant = defaults.MaxSessionsPerTenant
