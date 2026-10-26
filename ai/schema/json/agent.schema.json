@@ -14,6 +14,15 @@
       "additionalProperties": false,
       "required": ["model", "prompt_base_path"],
       "properties": {
+        "explicit_memory": {
+          "type": "object", "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean", "default": false },
+            "max_items": { "type": "integer", "minimum": 1, "maximum": 128, "default": 16 },
+            "max_bytes": { "type": "integer", "minimum": 256, "maximum": 2097152, "default": 16384 },
+            "max_tokens": { "type": "integer", "minimum": 64, "maximum": 32768, "default": 4096 }
+          }
+        },
         "conversation_summary": {
           "type": "object", "additionalProperties": false,
           "properties": {

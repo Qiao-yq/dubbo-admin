@@ -17,18 +17,22 @@
 
 package server
 
-import "dubbo-admin-ai/config"
+import (
+	"dubbo-admin-ai/component/server/engine"
+	"dubbo-admin-ai/config"
+)
 
 // ServerSpec defines server configuration
 type ServerSpec struct {
-	Port           int                 `yaml:"port"`
-	Host           string              `yaml:"host"`
-	Debug          bool                `yaml:"debug"`
-	CORSOrigins    []string            `yaml:"cors_origins"`
-	ReadTimeout    int                 `yaml:"read_timeout"`
-	WriteTimeout   int                 `yaml:"write_timeout"`
-	Authentication AuthenticationSpec  `yaml:"authentication"`
-	Features       config.FeatureFlags `yaml:"features"`
+	MemoryProjects []engine.MemoryProject `yaml:"memory_projects"`
+	Port           int                    `yaml:"port"`
+	Host           string                 `yaml:"host"`
+	Debug          bool                   `yaml:"debug"`
+	CORSOrigins    []string               `yaml:"cors_origins"`
+	ReadTimeout    int                    `yaml:"read_timeout"`
+	WriteTimeout   int                    `yaml:"write_timeout"`
+	Authentication AuthenticationSpec     `yaml:"authentication"`
+	Features       config.FeatureFlags    `yaml:"features"`
 }
 
 // AuthenticationSpec configures the trusted identity used by the AI HTTP

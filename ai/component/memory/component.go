@@ -139,6 +139,7 @@ func (m *MemoryComponent) Validate() error {
 func (m *MemoryComponent) Init(rt *runtime.Runtime) error {
 	m.rt = rt
 	quota := conversationstore.QuotaPolicy{
+		ExplicitMemory:       m.spec.ExplicitMemory,
 		MaxSessionsPerTenant: m.spec.Quota.MaxSessionsPerTenant, MaxTurnsPerSession: m.spec.MaxTurns,
 		MaxEventsPerTurn: m.spec.Quota.MaxEventsPerTurn, MaxSessionBytes: m.spec.Quota.MaxSessionBytes,
 		MaxTenantBytes: m.spec.Quota.MaxTenantBytes, MaxInMemoryEntities: m.spec.Quota.MaxInMemoryEntities,
@@ -189,6 +190,13 @@ func (m *MemoryComponent) Init(rt *runtime.Runtime) error {
 	if summaries, ok := m.store.(conversationstore.SummaryMaintenanceStore); ok {
 		if err := m.RegisterDerivedArtifactCleanupHandler(conversationstore.SummaryArtifactKind, conversationstore.DerivedArtifactCleanupFunc(func(ctx context.Context, artifact conversationstore.DerivedArtifact) error {
 			return summaries.DeleteSummary(ctx, security.SystemAccessContext(), artifact)
+		})); err != nil {
+			return err
+		}
+	}
+	if memories, ok := m.store.(conversationstore.ExplicitMemoryMaintenanceStore); ok {
+		if err := m.RegisterDerivedArtifactCleanupHandler(conversationstore.MemoryArtifactKind, conversationstore.DerivedArtifactCleanupFunc(func(ctx context.Context, artifact conversationstore.DerivedArtifact) error {
+			return memories.DeleteSourceMemory(ctx, security.SystemAccessContext(), artifact)
 		})); err != nil {
 			return err
 		}

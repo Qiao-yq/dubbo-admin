@@ -37,10 +37,11 @@ import (
 
 // ServerComponent Server component implementation
 type ServerComponent struct {
-	rt           *runtime.Runtime
-	srv          *http.Server
-	router       *engine.Router
-	instanceName string
+	memoryProjects []engine.MemoryProject
+	rt             *runtime.Runtime
+	srv            *http.Server
+	router         *engine.Router
+	instanceName   string
 
 	port           int
 	host           string
@@ -246,6 +247,8 @@ func (s *ServerComponent) Start() error {
 		return fmt.Errorf("failed to create AI router: %w", err)
 	}
 	s.router = router
+	router.SetMatchContextValidator(engine.ProjectCatalog(s.memoryProjects))
+	router.SetMemoryAuditEnabled(s.features.AuditEvents)
 
 	// Add health check endpoint
 	router.GetEngine().GET("/health", func(c *gin.Context) {

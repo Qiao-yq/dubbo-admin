@@ -28,11 +28,14 @@ import (
 
 // AgentHandler handles AI Agent requests
 type AgentHandler struct {
-	agent            agent.Agent
-	sessionMgr       *session.Manager
-	interactionStore conversationstore.MessageStore
-	interactionLease time.Duration
-	newStreamWriter  func(*gin.Context) (*sse.StreamWriter, error)
+	memoryAuditEnabled bool
+	memoryStore        conversationstore.ExplicitMemoryStore
+	matchValidator     MatchContextValidator
+	agent              agent.Agent
+	sessionMgr         *session.Manager
+	interactionStore   conversationstore.MessageStore
+	interactionLease   time.Duration
+	newStreamWriter    func(*gin.Context) (*sse.StreamWriter, error)
 }
 
 const (
@@ -45,12 +48,14 @@ const (
 // NewAgentHandler creates an AI Agent handler
 func NewAgentHandler(agent agent.Agent, sessionMgr *session.Manager, stores ...conversationstore.MessageStore) *AgentHandler {
 	handler := &AgentHandler{
-		agent: agent, sessionMgr: sessionMgr,
+		memoryAuditEnabled: true,
+		agent:              agent, sessionMgr: sessionMgr,
 		interactionLease: conversationstore.DefaultLifecyclePolicy().InteractionLease,
 		newStreamWriter:  sse.NewStreamWriter,
 	}
 	if len(stores) > 0 {
 		handler.interactionStore = stores[0]
+		handler.memoryStore, _ = stores[0].(conversationstore.ExplicitMemoryStore)
 	}
 	return handler
 }
@@ -73,7 +78,7 @@ func (h *AgentHandler) StreamChat(c *gin.Context) {
 	)
 
 	// Parse request
-	if err = c.ShouldBindJSON(&req); err != nil {
+	if err = strictJSON(c, &req); err != nil || req.Message == "" || req.SessionID == "" {
 		rt.GetLogger().Warn("Invalid stream request", "error_type", fmt.Sprintf("%T", err))
 		c.JSON(http.StatusBadRequest, NewErrorResponse(clientInvalidRequest))
 		return
@@ -84,6 +89,11 @@ func (h *AgentHandler) StreamChat(c *gin.Context) {
 	access, accessErr := security.AccessContextFromContext(requestCtx)
 	if accessErr != nil {
 		c.JSON(http.StatusUnauthorized, NewAPIErrorResponse("AUTHENTICATION_REQUIRED", "Authentication required"))
+		return
+	}
+	req.MatchContext, err = h.validateMatch(c, access, req.MatchContext)
+	if err != nil {
+		memoryError(c, err)
 		return
 	}
 	if _, err = h.sessionMgr.GetSession(requestCtx, access, sessionID); err != nil {
@@ -160,7 +170,7 @@ func (h *AgentHandler) StreamChat(c *gin.Context) {
 	if prepared != nil {
 		extractedCtx = conversationstore.WithPreparedInteraction(extractedCtx, prepared)
 	}
-	channels = h.agent.Interact(context.WithoutCancel(extractedCtx), &schema.UserInput{Content: req.Message}, sessionID)
+	channels = h.agent.Interact(context.WithoutCancel(extractedCtx), &schema.UserInput{Content: req.Message, MatchContext: req.MatchContext}, sessionID)
 	if !channels.Valid() {
 		rt.GetLogger().Error("Agent returned invalid channels", "session_id", sessionID)
 		sseHandler.HandleError("agent_error", clientAgentError)
@@ -236,6 +246,16 @@ func validIdempotencyKey(key string) bool {
 }
 
 func hashChatRequest(req ChatRequest) string {
+	if req.MatchContext != (conversationstore.MatchContext{}) {
+		payload, _ := json.Marshal(struct {
+			Version      int                            `json:"version"`
+			SessionID    string                         `json:"session_id"`
+			Message      string                         `json:"message"`
+			MatchContext conversationstore.MatchContext `json:"match_context"`
+		}{2, req.SessionID, req.Message, req.MatchContext})
+		digest := sha256.Sum256(payload)
+		return hex.EncodeToString(digest[:])
+	}
 	payload, _ := json.Marshal(struct {
 		Version   int    `json:"version"`
 		SessionID string `json:"session_id"`

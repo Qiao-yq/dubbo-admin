@@ -50,5 +50,6 @@ func ServerFactory(spec *yaml.Node) (runtime.Component, error) {
 		return nil, err
 	}
 	component.(*ServerComponent).features = cfg.Features
+	component.(*ServerComponent).memoryProjects = cfg.MemoryProjects
 	return component, nil
 }
