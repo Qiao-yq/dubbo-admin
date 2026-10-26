@@ -31,6 +31,7 @@ import (
 func (ra *ReActAgent) execCanonicalTools(ctx context.Context, state *interactionState, s *interactionTrace, reqs []*ai.ToolRequest) (err error) {
 	batch := store.ToolBatch{ID: uuid.NewString(), TenantID: state.sessionTenant, OwnerID: state.sessionOwner, SessionID: s.Session, TurnID: state.turnID, InteractionID: state.interactionID, Sequence: uint64(s.Iteration), Version: 1, SchemaVersion: "v1"}
 	batch.ModelCallID = s.ModelCallID
+	batch.Dependencies = append([]store.MemoryDependency(nil), state.usedMemory...)
 	seen := map[string]bool{}
 	for _, req := range reqs {
 		if req == nil || !state.allowedTools[req.Name] {

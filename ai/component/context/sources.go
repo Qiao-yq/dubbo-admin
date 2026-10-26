@@ -43,6 +43,11 @@ func (s SnapshotSource) Collect(ctx context.Context, req CollectRequest) (Collec
 			continue
 		}
 		item := ContextItem{ID: fmt.Sprintf("%s:%d", s.Kind, turn.ID), SourceID: s.Kind, SourceVersion: "v1", TenantID: turn.TenantID, OwnerID: turn.OwnerID, SessionID: req.SessionID, CanonicalID: fmt.Sprintf("turn:%s:%d", req.SessionID, turn.ID), GroupID: fmt.Sprintf("turn:%d", turn.ID), Version: 1}
+		item.Dependencies = append([]store.MemoryDependency(nil), turn.Dependencies...)
+		if turn.MemoryFiltered {
+			item.FilteredReason = "MEMORY_DEPENDENCY_INVALID"
+			item.Events = append(item.Events, Event{Kind: "evidence", Text: "A previous answer and its tool groups were omitted because their Memory dependencies are no longer valid. Original user statements remain independent history."})
+		}
 		item.HistorySequence = turn.Sequence
 		item.HistoryPrevious = turn.PreviousSequence
 		if turn.ByteLimited {
@@ -154,7 +159,7 @@ func RegisterCoreSources(c *Compiler) error {
 		kind string
 		p    SourcePolicy
 	}{
-		{"history", SourcePolicy{Order: 10, History: true, RecentSuffix: true, Kinds: []string{"user", "model", "legacy", "tool_batch"}}},
+		{"history", SourcePolicy{Order: 10, History: true, RecentSuffix: true, Kinds: []string{"user", "model", "legacy", "tool_batch", "evidence"}}},
 		{"input", SourcePolicy{Order: 20, Required: true, Kinds: []string{"user", "model", "legacy"}}},
 		{"tools", SourcePolicy{Order: 30, Required: true, Kinds: []string{"tool_batch"}}},
 	} {
@@ -210,6 +215,7 @@ func (s RecoverySource) Collect(ctx context.Context, req CollectRequest) (Collec
 		item.CanonicalID = "batch:" + b.ID
 		item.GroupID = item.CanonicalID
 		item.Version = b.Version
+		item.Dependencies = append([]store.MemoryDependency(nil), b.Dependencies...)
 		item.SummarySequence = req.Recovery.TerminalSequences[b.TurnID]
 		result.Items = append(result.Items, item)
 	}

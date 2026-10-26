@@ -103,17 +103,20 @@ func (c *Compiler) Register(source ContextSource, p SourcePolicy) error {
 }
 
 type candidate struct {
-	summarySequence uint64
-	historyPrevious uint64
-	historySequence uint64
-	coversThrough   uint64
-	messages        []Message
-	required        bool
-	tokens          int
-	decision        int
-	bytes           int
-	sequence        string
-	unavailable     bool
+	dependencies     []store.MemoryDependency
+	sourceID         string
+	sourceTokenLimit int
+	summarySequence  uint64
+	historyPrevious  uint64
+	historySequence  uint64
+	coversThrough    uint64
+	messages         []Message
+	required         bool
+	tokens           int
+	decision         int
+	bytes            int
+	sequence         string
+	unavailable      bool
 }
 
 // Estimate counts UTF-8 bytes conservatively, plus protocol framing. This is an
@@ -234,13 +237,20 @@ func (c *Compiler) Compile(ctx context.Context, req CompileRequest) (*CompiledRe
 		if len(result.Items)+len(out.Report.Decisions) > req.MaxItems {
 			return nil, fmt.Errorf("source exceeded item limit")
 		}
+		if result.ReasonCode != "" {
+			out.Report.SourceReasons = append(out.Report.SourceReasons, r.descriptor.ID+":"+result.ReasonCode)
+		}
 		for _, item := range result.Items {
 			item.Scope = r.policy.Scope
 			item.Trust = r.policy.Trust
 			item.Authority = r.policy.Authority
 			item.Sensitivity = r.policy.Sensitivity
 			d := CompilationDecision{ItemID: item.ID, SourceID: r.descriptor.ID, SourceVersion: r.descriptor.Version, Scope: item.Scope, Trust: item.Trust, Authority: item.Authority, Sensitivity: item.Sensitivity, CanonicalID: item.CanonicalID, GroupID: item.GroupID, ItemVersion: item.Version}
-			valid := item.ID != "" && !seen[r.descriptor.ID+":"+item.ID] && item.SourceID == r.descriptor.ID && item.SourceVersion == r.descriptor.Version && item.TenantID == req.SessionTenantID && item.OwnerID == req.SessionOwnerID && item.SessionID == req.SessionID && item.Version > 0
+			identityTenant, identityOwner := req.SessionTenantID, req.SessionOwnerID
+			if r.policy.Scope == "user" {
+				identityTenant, identityOwner = req.Access.Subject.TenantID, req.Access.Subject.UserID
+			}
+			valid := item.ID != "" && !seen[r.descriptor.ID+":"+item.ID] && item.SourceID == r.descriptor.ID && item.SourceVersion == r.descriptor.Version && item.TenantID == identityTenant && item.OwnerID == identityOwner && item.SessionID == req.SessionID && item.Version > 0
 			seen[r.descriptor.ID+":"+item.ID] = true
 			if !valid || (item.ExpiresAt != nil && !item.ExpiresAt.After(req.NotAfter)) || (!item.ObservedAt.IsZero() && item.ObservedAt.After(req.NotAfter)) {
 				d.Status = "rejected"
@@ -262,7 +272,7 @@ func (c *Compiler) Compile(ctx context.Context, req CompileRequest) (*CompiledRe
 				item.UnavailableReason = "SOURCE_BYTE_LIMIT"
 			}
 			if item.UnavailableReason != "" {
-				if item.UnavailableReason != "SOURCE_BYTE_LIMIT" && item.UnavailableReason != "RECOVERY_LIMIT" {
+				if item.UnavailableReason != "SOURCE_BYTE_LIMIT" && item.UnavailableReason != "RECOVERY_LIMIT" && item.UnavailableReason != "MEMORY_CURRENT_INPUT_CONFLICT" {
 					return nil, fmt.Errorf("unknown source omission code")
 				}
 				if r.policy.Required {
@@ -294,8 +304,16 @@ func (c *Compiler) Compile(ctx context.Context, req CompileRequest) (*CompiledRe
 				d.ReasonCode = "STRUCTURED_TOOL_LIMIT"
 			}
 			index := len(out.Report.Decisions)
+			if item.FilteredReason != "" {
+				d.Status = "filtered"
+				d.ReasonCode = item.FilteredReason
+				out.Report.Degraded = true
+			}
 			out.Report.Decisions = append(out.Report.Decisions, d)
 			v := candidate{messages: messages, required: r.policy.Required, tokens: d.EstimatedTokens, bytes: len(JSON(messages)) + 1, decision: index}
+			v.dependencies = append([]store.MemoryDependency(nil), item.Dependencies...)
+			v.sourceID = r.descriptor.ID
+			v.sourceTokenLimit = r.policy.MaxTokens
 			if r.policy.History {
 				v.historySequence = item.HistorySequence
 				v.historyPrevious = item.HistoryPrevious
@@ -340,6 +358,7 @@ func (c *Compiler) Compile(ctx context.Context, req CompileRequest) (*CompiledRe
 		selected := map[int]bool{}
 		reasons := map[int]string{}
 		blocked := map[string]bool{}
+		sourceTokens := map[string]int{}
 		tokens, bytes := used, usedBytes
 		for i := len(candidates) - 1; i >= 0; i-- {
 			v := candidates[i]
@@ -359,10 +378,15 @@ func (c *Compiler) Compile(ctx context.Context, req CompileRequest) (*CompiledRe
 				reasons[i] = "SUMMARY_NOT_SELECTED"
 				continue
 			}
+			if v.sourceTokenLimit > 0 && sourceTokens[v.sourceID]+v.tokens > v.sourceTokenLimit {
+				reasons[i] = "SOURCE_TOKEN_LIMIT"
+				continue
+			}
 			if !blocked[v.sequence] && tokens+v.tokens <= available && bytes+v.bytes <= req.MaxBytes {
 				tokens += v.tokens
 				bytes += v.bytes
 				selected[i] = true
+				sourceTokens[v.sourceID] += v.tokens
 			} else {
 				if v.sequence != "" {
 					blocked[v.sequence] = true
@@ -390,6 +414,7 @@ func (c *Compiler) Compile(ctx context.Context, req CompileRequest) (*CompiledRe
 	for i, v := range candidates {
 		if selected[i] {
 			out.Messages = append(out.Messages, v.messages...)
+			out.Dependencies = store.MergeMemoryDependencies(out.Dependencies, v.dependencies)
 		}
 	}
 	if req.HistorySnapshot.Upper > 0 {
@@ -417,6 +442,9 @@ func (c *Compiler) Compile(ctx context.Context, req CompileRequest) (*CompiledRe
 		}
 	}
 	out.Report.InputTokens = total
+	if len(out.Dependencies) > 256 {
+		return nil, store.ErrResourceExhausted
+	}
 	return out, nil
 }
 

@@ -45,6 +45,8 @@ type SourceDescriptor struct {
 	RequiredPermission []string
 }
 type CollectRequest struct {
+	MatchContext    store.MatchContext
+	MemoryEnabled   bool
 	SummaryCalls    int
 	SummaryBacklog  bool
 	Summary         *store.Summary
@@ -66,7 +68,10 @@ type CollectRequest struct {
 	NotBefore       *time.Time
 	NotAfter        time.Time
 }
-type CollectResult struct{ Items []ContextItem }
+type CollectResult struct {
+	Items      []ContextItem
+	ReasonCode string
+}
 
 // Event.Kind expresses canonical provenance, never a caller-selected system role.
 type Event struct {
@@ -75,6 +80,8 @@ type Event struct {
 	Batch *store.ToolBatch
 }
 type ContextItem struct {
+	FilteredReason               string
+	Dependencies                 []store.MemoryDependency
 	SummarySequence              uint64
 	HistoryPrevious              uint64
 	HistorySequence              uint64
@@ -96,6 +103,7 @@ type ContextItem struct {
 
 // SourcePolicy is assigned at registration by the trusted composition root.
 type SourcePolicy struct {
+	MaxTokens int
 	// SummaryDedup permits terminal-position deduplication without treating
 	// recovery details as complete Turns in history omission accounting.
 	SummaryDedup    bool
@@ -145,6 +153,7 @@ type CompilationDecision struct {
 	EstimatedTokens                                     int
 }
 type CompilationReport struct {
+	SourceReasons                                                                []string
 	Summary                                                                      *SummaryReport
 	HistoryOmissions                                                             []HistoryOmission
 	ContextTokens                                                                int
@@ -168,6 +177,7 @@ type SummaryReport struct {
 	Backlog, FragmentPending                                 bool
 }
 type CompiledRequest struct {
+	Dependencies                             []store.MemoryDependency
 	ContextTokens                            int
 	Model, Phase, TemplateRef, PolicyVersion string
 	Messages                                 []Message

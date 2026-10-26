@@ -14,6 +14,12 @@ spec:
   max_collect_bytes: 8388608
   template_id: react
   template_version: "1"
+  # Explicit cross-session Memory is independent from conversation summaries.
+  explicit_memory:
+    enabled: false
+    max_items: 16
+    max_bytes: 16384
+    max_tokens: 4096
 
   # Model sampling + per model-call timeout (seconds).
   temperature: 0.7
