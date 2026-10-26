@@ -94,11 +94,12 @@ type SummaryPayload struct {
 }
 
 // MemoryDependency is server-owned provenance propagated through answers,
-// summaries and intermediate fragments. PR 3 resolves these versions at read/write.
+// summaries and intermediate fragments. Stores resolve these versions at read/write.
 type MemoryDependency struct {
-	ID         string
-	Version    uint64
-	Generation uint64
+	ID           string
+	Version      uint64
+	Generation   uint64
+	StateVersion uint64
 }
 
 type SummaryProgress struct {
@@ -118,6 +119,19 @@ type Summary struct {
 	Sources                               []string
 	Dependencies                          []MemoryDependency
 	Progress                              *SummaryProgress
+}
+
+// RebuildSummary preserves the physical CAS version but discards invalid derived
+// content and coverage. A successful next commit replaces that exact version.
+func RebuildSummary(v Summary) *Summary {
+	v.Covered = 0
+	v.SourceUpper = 0
+	v.Target = 0
+	v.Payload = SummaryPayload{}
+	v.Sources = nil
+	v.Dependencies = nil
+	v.Progress = nil
+	return &v
 }
 
 type SummaryReadRequest struct {
@@ -441,7 +455,10 @@ func MergeMemoryDependencies(groups ...[]MemoryDependency) []MemoryDependency {
 		if a.Generation != b.Generation {
 			return a.Generation < b.Generation
 		}
-		return a.Version < b.Version
+		if a.Version != b.Version {
+			return a.Version < b.Version
+		}
+		return a.StateVersion < b.StateVersion
 	})
 	return out
 }

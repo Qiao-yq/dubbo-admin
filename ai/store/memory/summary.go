@@ -125,6 +125,10 @@ func (m *MemoryStore) readSummaryBatchLocked(ctx context.Context, a security.Acc
 		return store.SummaryBatch{}, store.ErrSummaryNotFound
 	}
 	entry := entries[index]
+	stale := m.validateMemoryDependenciesLocked(a, entry.SessionID, entry.Dependencies) != nil
+	if stale {
+		entry.Dependencies = nil
+	}
 	// Marshal one record at a time; canonical in-memory messages are already resident.
 	var records []any
 	var classes []string
@@ -132,6 +136,9 @@ func (m *MemoryStore) readSummaryBatchLocked(ctx context.Context, a security.Acc
 		for _, t := range h.history {
 			if t.id == entry.TurnID {
 				for _, msg := range t.messages() {
+					if stale && string(msg.Role) != "user" {
+						continue
+					}
 					records = append(records, msg)
 					classes = append(classes, string(msg.Role))
 				}
@@ -142,6 +149,9 @@ func (m *MemoryStore) readSummaryBatchLocked(ctx context.Context, a security.Acc
 	var batches []store.ToolBatch
 	messageCount := len(records)
 	for _, b := range m.toolBatches {
+		if stale {
+			continue
+		}
 		if b.SessionID == entry.SessionID && b.TurnID == entry.TurnID {
 			batches = append(batches, b)
 		}
@@ -234,6 +244,9 @@ func (m *MemoryStore) GetSummary(ctx context.Context, a security.AccessContext, 
 	if !ok {
 		return nil, store.ErrSummaryNotFound
 	}
+	if err := m.validateMemoryDependenciesLocked(a, id, v.Dependencies); err != nil {
+		return store.RebuildSummary(v), nil
+	}
 	return cloneSummary(v), nil
 }
 
@@ -251,13 +264,20 @@ func (m *MemoryStore) CommitSummary(ctx context.Context, a security.AccessContex
 	if v, ok := m.summaries[c.Value.SessionID]; ok {
 		old = &v
 	}
+	physicalOld := old
+	if old != nil && m.validateMemoryDependenciesLocked(a, c.Value.SessionID, old.Dependencies) != nil {
+		old = store.RebuildSummary(*old)
+	}
+	if err := m.validateMemoryDependenciesLocked(a, c.Value.SessionID, c.Value.Dependencies); err != nil {
+		return err
+	}
 	if err := store.ValidateSummaryCommit(a, c, old, batch); err != nil {
 		return err
 	}
 	data, _ := json.Marshal(c.Value)
 	delta := int64(len(data))
-	if old != nil {
-		raw, _ := json.Marshal(old)
+	if physicalOld != nil {
+		raw, _ := json.Marshal(physicalOld)
 		delta -= int64(len(raw))
 	}
 	if m.sessionBytesLocked(c.Value.SessionID)+delta > m.quota.MaxSessionBytes || m.tenantBytesLocked(c.Value.TenantID)+delta > m.quota.MaxTenantBytes || (old == nil && m.entityCountLocked()+1 > m.quota.MaxInMemoryEntities) {

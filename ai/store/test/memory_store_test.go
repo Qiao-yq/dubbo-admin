@@ -28,6 +28,7 @@ import (
 	"dubbo-admin-ai/security"
 	conversationstore "dubbo-admin-ai/store"
 	memorystore "dubbo-admin-ai/store/memory"
+	"dubbo-admin-ai/testutils"
 
 	"github.com/firebase/genkit/go/ai"
 )
@@ -44,6 +45,26 @@ func TestMemoryStore_CompilationContract(t *testing.T) {
 
 func TestMemoryStore_SummaryContract(t *testing.T) {
 	RunSummaryContractTests(t, func() conversationstore.BackendStore { return memorystore.NewMemoryStore(20) })
+}
+
+func TestMemoryStore_ExplicitMemoryContract(t *testing.T) {
+	RunExplicitMemoryContractTests(t, func() conversationstore.BackendStore { return memorystore.NewMemoryStore(20) })
+}
+
+func TestMemoryStore_DisableMemoryForMultipleUsersAtFullQuota(t *testing.T) {
+	quota := conversationstore.DefaultQuotaPolicy()
+	quota.MaxTenantBytes = 1
+	m := memorystore.NewMemoryStoreWithPolicy(quota)
+	ctx := context.Background()
+	base := testutils.TestAccess()
+	for i := 0; i < 3; i++ {
+		a := base
+		a.Subject.UserID = fmt.Sprintf("full-quota-user-%d", i)
+		off := false
+		if _, err := m.ChangeMemorySettings(ctx, a, conversationstore.MemoryMutation{Generation: 1, StateVersion: 1, Enabled: &off}, false); err != nil {
+			t.Fatalf("user %d disable at full quota: %v", i, err)
+		}
+	}
 }
 
 func TestMemoryStore_QuotaContract(t *testing.T) {

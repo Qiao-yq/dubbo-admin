@@ -31,6 +31,7 @@ func DerivedArtifactRetryAt(failedAt time.Time, attempt uint32) time.Time {
 }
 
 type QuotaPolicy struct {
+	ExplicitMemory       MemoryPolicy
 	MaxSessionsPerTenant int
 	MaxTurnsPerSession   int
 	MaxEventsPerTurn     int
@@ -56,6 +57,7 @@ func DefaultQuotaPolicy() QuotaPolicy {
 // values. This keeps direct Store construction consistent with component
 // configuration decoding.
 func (p QuotaPolicy) WithDefaults() QuotaPolicy {
+	p.ExplicitMemory = p.ExplicitMemory.WithDefaults()
 	defaults := DefaultQuotaPolicy()
 	if p.MaxSessionsPerTenant <= 0 {
 		p.MaxSessionsPerTenant = defaults.MaxSessionsPerTenant

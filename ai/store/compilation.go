@@ -34,6 +34,7 @@ const MaxToolBatchBytes = 1 << 20
 
 // TurnContext preserves the storage boundary; callers must not infer it from roles.
 type TurnContext struct {
+	MemoryFiltered   bool
 	PreviousSequence uint64
 	Sequence         uint64
 	Dependencies     []MemoryDependency
@@ -49,6 +50,7 @@ type TurnContext struct {
 // ToolBatch is a versioned canonical execution ledger, independent of SDK messages.
 // It survives failed-turn cleanup and is removed with its source Session.
 type ToolBatch struct {
+	Dependencies  []MemoryDependency
 	ModelCallID   string
 	ID            string
 	TenantID      string
