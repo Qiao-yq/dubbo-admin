@@ -88,14 +88,24 @@ func TestExpiredMemoryRemainsDeletableWhenItConsumesQuota(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	expires := time.Now().Add(20 * time.Millisecond)
+	expires := time.Now().Add(3 * time.Second)
 	w := memoryWriteForTest(settings)
 	w.ExpiresAt = &expires
 	first, err := s.SaveMemory(ctx, a, w)
 	if err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(40 * time.Millisecond)
+	live, _, err := s.RecallMemories(ctx, a, store.MatchContext{}, 32, 16384)
+	if err != nil || len(live) != 1 {
+		t.Fatalf("record must be live after setup: %#v, %v", live, err)
+	}
+	testutils.WaitFor(t, 10*time.Second, "quota-consuming memory expiry", func() bool {
+		items, _, err := s.RecallMemories(ctx, a, store.MatchContext{}, 32, 16384)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return !time.Now().Before(expires) && len(items) == 0
+	})
 	page, err := s.ListMemories(ctx, a, "", 32)
 	if err != nil || len(page.Records) != 1 {
 		t.Fatalf("expired record missing from list: %#v, %v", page, err)

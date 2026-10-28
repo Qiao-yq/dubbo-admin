@@ -21,6 +21,7 @@ import (
 	"dubbo-admin-ai/component/memory/summary"
 	"dubbo-admin-ai/security"
 	"dubbo-admin-ai/store"
+	"dubbo-admin-ai/testutils"
 	"github.com/firebase/genkit/go/ai"
 )
 
@@ -39,13 +40,23 @@ func RunExplicitMemoryContractTests(t *testing.T, newStore func() store.BackendS
 		if err != nil {
 			t.Fatal(err)
 		}
-		expires := time.Now().Add(20 * time.Millisecond)
+		expires := time.Now().Add(3 * time.Second)
 		w := memoryWrite(settings)
 		w.ExpiresAt = &expires
 		if _, err := mem.SaveMemory(ctx, a, w); err != nil {
 			t.Fatal(err)
 		}
-		time.Sleep(40 * time.Millisecond)
+		live, _, err := mem.RecallMemories(ctx, a, store.MatchContext{}, 32, 16384)
+		if err != nil || len(live) != 1 {
+			t.Fatalf("record must be live after setup: %#v, %v", live, err)
+		}
+		testutils.WaitFor(t, 10*time.Second, "memory expiry", func() bool {
+			items, _, err := mem.RecallMemories(ctx, a, store.MatchContext{}, 32, 16384)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return !time.Now().Before(expires) && len(items) == 0
+		})
 		page, err := mem.ListMemories(ctx, a, "", 32)
 		if err != nil || len(page.Records) != 1 || page.Records[0].ExpiresAt == nil {
 			t.Fatalf("expired record missing from management list: %#v, %v", page, err)
@@ -61,7 +72,7 @@ func RunExplicitMemoryContractTests(t *testing.T, newStore func() store.BackendS
 		s := newStore()
 		mem := s.(store.ExplicitMemoryStore)
 		now := time.Now()
-		sourceExpiry := now.Add(20 * time.Millisecond)
+		sourceExpiry := now.Add(3 * time.Second)
 		if err := s.Create(ctx, a, &store.Session{ID: "expired-memory-source", TenantID: a.Subject.TenantID, OwnerID: a.Subject.UserID, Version: 1, Status: store.SessionStatusActive, CreatedAt: now, UpdatedAt: now, ExpiresAt: &sourceExpiry}); err != nil {
 			t.Fatal(err)
 		}
@@ -74,10 +85,24 @@ func RunExplicitMemoryContractTests(t *testing.T, newStore func() store.BackendS
 		if _, err := mem.SaveMemory(ctx, a, w); err != nil {
 			t.Fatal(err)
 		}
-		time.Sleep(40 * time.Millisecond)
+		live, _, err := mem.RecallMemories(ctx, a, store.MatchContext{}, 32, 16384)
+		if err != nil || len(live) != 1 {
+			t.Fatalf("source memory must be live after setup: %#v, %v", live, err)
+		}
+		testutils.WaitFor(t, 10*time.Second, "source session expiry", func() bool {
+			_, err := s.Get(ctx, a, w.SourceSessionID)
+			if err != nil && !errors.Is(err, store.ErrSessionExpired) {
+				t.Fatal(err)
+			}
+			return errors.Is(err, store.ErrSessionExpired)
+		})
 		page, err := mem.ListMemories(ctx, a, "", 32)
 		if err != nil || len(page.Records) != 1 || page.Records[0].Value != "" || page.Records[0].Status != "source_unavailable" {
 			t.Fatalf("source-expired memory exposed with content: %#v, %v", page, err)
+		}
+		items, _, err := mem.RecallMemories(ctx, a, store.MatchContext{}, 32, 16384)
+		if err != nil || len(items) != 0 {
+			t.Fatalf("source-expired memory recalled: %#v, %v", items, err)
 		}
 	})
 	for _, scenario := range []string{"identity", "lifecycle", "clear race", "source", "summary rebuild", "fragment invalidation", "summary commit race"} {
