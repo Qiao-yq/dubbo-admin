@@ -80,6 +80,36 @@ func TestSanitizeTextRedactsJSONCredentials(t *testing.T) {
 	}
 }
 
+func TestSanitizeTextRedactsEscapedQuotesInJSONCredentials(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "escaped quote inside value",
+			input: `{"password":"prefix\"review-suffix-secret","enabled":true}`,
+			want:  `{"password":"[REDACTED]","enabled":true}`,
+		},
+		{
+			name:  "escaped backslash inside value",
+			input: `{"secret":"prefix\\review-suffix-secret","enabled":true}`,
+			want:  `{"secret":"[REDACTED]","enabled":true}`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := DefaultSanitizer().SanitizeText(tt.input)
+			if len(result.Findings) == 0 || strings.Contains(result.Value, "review-suffix-secret") {
+				t.Fatalf("escaped credential leaked: value=%q findings=%#v", result.Value, result.Findings)
+			}
+			if result.Value != tt.want {
+				t.Fatalf("SanitizeText() = %q, want %q", result.Value, tt.want)
+			}
+		})
+	}
+}
+
 func TestSanitizeHeadersURLAndNestedValues(t *testing.T) {
 	headers := http.Header{
 		"Authorization": {"Bearer " + testSecret},
