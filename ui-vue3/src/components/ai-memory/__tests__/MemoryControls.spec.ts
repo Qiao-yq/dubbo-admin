@@ -158,6 +158,41 @@ describe('Memory editor', () => {
   })
 })
 describe('Memory panel', () => {
+  it('blocks editing unavailable sources but allows confirmed deletion', async () => {
+    vi.mocked(aiMemoryService.list).mockResolvedValue({
+      ...settings,
+      records: [{ ...record, status: 'source_unavailable', value: '' }]
+    })
+    wrapper = mount(MemoryPanel, {
+      props: { open: true, options: options as never },
+      global: globalOptions()
+    })
+    await flushPromises()
+    expect(wrapper.text()).toContain('Source conversation unavailable; content hidden')
+    const edit = wrapper.find('[data-testid="memory-edit"]')
+    expect(edit.attributes('disabled')).toBeDefined()
+    await edit.trigger('click')
+    expect(wrapper.findComponent(MemoryEditor).exists()).toBe(false)
+    expect(aiMemoryService.save).not.toHaveBeenCalled()
+    expect(wrapper.find('[data-testid="memory-delete"]').attributes('disabled')).toBeUndefined()
+    await wrapper.find('[data-testid="memory-delete"]').trigger('click')
+    expect(aiMemoryService.delete).not.toHaveBeenCalled()
+    await wrapper.findAllComponents(ModalStub).at(-1)!.vm.$emit('ok')
+    await flushPromises()
+    expect(aiMemoryService.delete).toHaveBeenCalledWith(record.id, settings, record.version)
+  })
+
+  it('allows editing an expired memory whose source is available', async () => {
+    wrapper = mount(MemoryPanel, {
+      props: { open: true, options: options as never },
+      global: globalOptions()
+    })
+    await flushPromises()
+    expect(wrapper.find('[data-testid="memory-edit"]').attributes('disabled')).toBeUndefined()
+    await wrapper.find('[data-testid="memory-edit"]').trigger('click')
+    expect(wrapper.findComponent(MemoryEditor).exists()).toBe(true)
+  })
+
   it('clears a load error after a later refresh succeeds', async () => {
     vi.mocked(aiMemoryService.list)
       .mockRejectedValueOnce(new AIAPIError('MEMORY_UNAVAILABLE', 503))

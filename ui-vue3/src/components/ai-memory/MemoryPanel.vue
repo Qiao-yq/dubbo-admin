@@ -63,7 +63,13 @@
           <a-button
             size="small"
             data-testid="memory-edit"
-            :disabled="!settings?.enabled || busy || loading || !categoryOf(record)"
+            :disabled="
+              !settings?.enabled ||
+              busy ||
+              loading ||
+              !categoryOf(record) ||
+              record.status === 'source_unavailable'
+            "
             @click="edit(record)"
             >{{ t('aiMemory.edit') }}</a-button
           >
@@ -236,6 +242,7 @@ function categoryLabel(record: ExplicitMemory) {
   return category ? t(`aiMemory.categories.${category}`) : t('aiMemory.unknownCategory')
 }
 function edit(record?: ExplicitMemory) {
+  if (record?.status === 'source_unavailable') return
   editing.value = record
   editorOpen.value = true
   mutationError.value = ''
