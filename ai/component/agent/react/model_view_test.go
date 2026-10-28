@@ -61,3 +61,36 @@ func TestModelInputViewSanitizesJSONText(t *testing.T) {
 		t.Fatalf("canonical JSON message was changed: %q", canonical.Content[0].Text)
 	}
 }
+
+func TestModelInputViewRedactsEscapedCredentialValues(t *testing.T) {
+	const suffix = "review-suffix-secret"
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{
+			name:  "escaped quote",
+			input: `{"password":"prefix\"` + suffix + `","enabled":true}`,
+		},
+		{
+			name:  "escaped backslash",
+			input: `{"password":"prefix\\` + suffix + `","enabled":true}`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			canonical := ai.NewMessage(ai.RoleUser, nil, ai.NewTextPart(tt.input))
+
+			view, err := modelInputView([]*ai.Message{canonical})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(view[0].Content[0].Text, suffix) {
+				t.Fatalf("model view leaked escaped credential suffix: %q", view[0].Content[0].Text)
+			}
+			if canonical.Content[0].Text != tt.input {
+				t.Fatalf("canonical message was changed: %q", canonical.Content[0].Text)
+			}
+		})
+	}
+}
