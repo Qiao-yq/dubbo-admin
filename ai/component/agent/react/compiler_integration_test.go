@@ -110,8 +110,13 @@ func compilerAgentFixture(t *testing.T, provider *providerFixture) (*ReActAgent,
 
 func runCompiledInteraction(t *testing.T, ra *ReActAgent, s store.BackendStore, key string) uint64 {
 	t.Helper()
-	ctx := testutils.ContextWithTestAccess(context.Background())
-	p, err := s.PrepareInteraction(ctx, testutils.TestAccess(), "compiled", key, key, time.Minute)
+	return runCompiledInteractionAs(t, ra, s, testutils.TestAccess(), key)
+}
+
+func runCompiledInteractionAs(t *testing.T, ra *ReActAgent, s store.BackendStore, access security.AccessContext, key string) uint64 {
+	t.Helper()
+	ctx := security.WithAccessContext(context.Background(), access)
+	p, err := s.PrepareInteraction(ctx, access, "compiled", key, key, time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -506,6 +511,29 @@ func checkProviderMessages(t *testing.T, request map[string]any, hasBatch bool, 
 		}
 	} else if len(calls) != 0 || len(responses) != 0 {
 		t.Fatal("unexpected tools")
+	}
+}
+
+func TestSameTenantSessionAdminExecutesCanonicalTools(t *testing.T) {
+	f := &providerFixture{first: `{"role":"assistant","tool_calls":[{"id":"admin-call","type":"function","function":{"name":"lookup","arguments":"{\"name\":\"ok\"}"}}]}`}
+	ra, s, _, _, executions := compilerAgentFixture(t, f)
+	owner := testutils.TestAccess()
+	admin := security.MustAccessContext(security.Subject{TenantID: owner.Subject.TenantID, UserID: "administrator", Scopes: []string{security.ScopeSessionAdmin}, AuthMethod: security.AuthMethodStatic})
+	turn := runCompiledInteractionAs(t, ra, s, admin, "admin")
+	if executions.Load() != 1 {
+		t.Fatalf("tool executions = %d", executions.Load())
+	}
+	batches, err := s.ToolBatches(context.Background(), admin, "compiled", turn, 10)
+	if err != nil || len(batches) != 1 || batches[0].Calls[0].Status != "succeeded" {
+		t.Fatalf("administrator canonical batch: %+v %v", batches, err)
+	}
+	if batches[0].TenantID != owner.Subject.TenantID || batches[0].OwnerID != owner.Subject.UserID {
+		t.Fatalf("batch owner = %s/%s, want session owner %s/%s", batches[0].TenantID, batches[0].OwnerID, owner.Subject.TenantID, owner.Subject.UserID)
+	}
+	// A same-tenant caller without the reserved scope must not reach the owner's Session.
+	intruder := security.MustAccessContext(security.Subject{TenantID: owner.Subject.TenantID, UserID: "intruder", AuthMethod: security.AuthMethodStatic})
+	if _, err := s.PrepareInteraction(security.WithAccessContext(context.Background(), intruder), intruder, "compiled", "intruder", "intruder", time.Minute); err == nil {
+		t.Fatal("unauthorized caller prepared an interaction")
 	}
 }
 

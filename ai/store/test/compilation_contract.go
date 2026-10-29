@@ -179,6 +179,32 @@ func RunCompilationContractTests(t *testing.T, newStore func() store.BackendStor
 						t.Fatal("cross-owner write")
 					}
 				}
+				// The reserved session-admin scope may act on another owner's
+				// Session within the same tenant, but canonical records must
+				// still belong to the Session owner rather than the caller.
+				admin := security.MustAccessContext(security.Subject{TenantID: a.Subject.TenantID, UserID: "administrator", Scopes: []string{security.ScopeSessionAdmin}, AuthMethod: "test"})
+				if _, err := c.ToolBatches(ctx, admin, "compile", prepared.TurnID, 5); err != nil {
+					t.Fatalf("same-tenant administrator lost ledger access: %v", err)
+				}
+				if _, err := c.ContextTurns(ctx, admin, "compile", prepared.TurnID, 1, 65536); err != nil {
+					t.Fatalf("same-tenant administrator lost snapshot access: %v", err)
+				}
+				if _, err := c.RecoveryToolBatches(ctx, admin, "compile", prepared.TurnID, 16, 65536); err != nil {
+					t.Fatalf("same-tenant administrator lost recovery access: %v", err)
+				}
+				adminBatch := batch
+				adminBatch.ID = "batch-admin"
+				adminBatch.Sequence = 2
+				if err := c.CreateToolBatch(ctx, admin, adminBatch); err != nil {
+					t.Fatalf("same-tenant administrator could not record canonical tool batch: %v", err)
+				}
+				mismatched := batch
+				mismatched.ID = "batch-wrong-owner"
+				mismatched.Sequence = 3
+				mismatched.OwnerID = admin.Subject.UserID
+				if err := c.CreateToolBatch(ctx, admin, mismatched); err == nil {
+					t.Fatal("administrator-owned batch accepted for a session owned by another user")
+				}
 			case "snapshot":
 				turns, err := c.ContextTurns(ctx, a, "compile", prepared.TurnID, 2, 65536)
 				if err != nil || len(turns) != 1 || len(turns[0].Batches) != 1 || turns[0].ID != prepared.TurnID {
