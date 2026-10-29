@@ -25,6 +25,7 @@ import (
 	comp "dubbo-admin-ai/component/context"
 	"dubbo-admin-ai/component/hooks"
 	"dubbo-admin-ai/component/memory/summary"
+	"dubbo-admin-ai/providerusage"
 	"dubbo-admin-ai/store"
 
 	"github.com/firebase/genkit/go/ai"
@@ -95,6 +96,10 @@ func (ra *ReActAgent) generateSummary(ctx context.Context, r summary.GenerateReq
 	hook.CompilerVersion = compiled.Report.CompilerVersion
 	hook.EstimatorVersion = compiled.Report.EstimatorVersion
 	hook.EstimatedInputTokens = compiled.Report.InputTokens
+	// Observe the provider boundary so an allocated all-zero Usage (the pinned
+	// adapter's representation of an omitted usage object) is not persisted as
+	// provider-reported zero usage.
+	ctx = providerusage.WithObservation(ctx)
 	response, err := (compiledPrompt{registry: ra.registry, request: compiled}).Execute(ctx)
 	if err != nil {
 		return "", err
@@ -107,6 +112,13 @@ func (ra *ReActAgent) generateSummary(ctx context.Context, r summary.GenerateReq
 		hook.InputTokens = response.Usage.InputTokens
 		hook.OutputTokens = response.Usage.OutputTokens
 		hook.TotalTokens = response.Usage.TotalTokens
+	}
+	if tokens, observed := providerusage.FromContext(ctx); observed {
+		hook.UsagePresent = tokens != nil
+		hook.InputTokens, hook.OutputTokens, hook.TotalTokens = 0, 0, 0
+		if tokens != nil {
+			hook.InputTokens, hook.OutputTokens, hook.TotalTokens = tokens.Input, tokens.Output, tokens.Total
+		}
 	}
 	return response.Text(), nil
 }
