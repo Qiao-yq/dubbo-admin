@@ -162,6 +162,7 @@ const props = withDefaults(
   defineProps<{
     open?: boolean
     service: ChatService<unknown>
+    // Must return JSON-serializable data; the drawer snapshots it for retries.
     collectContext?: () => unknown
     labels?: Partial<AIChatLabels>
     suggestions?: ChatSuggestion[]
@@ -348,7 +349,17 @@ async function sendMessage(isRetry = false) {
 
   if (!inputMsg.trim() || isLoading.value) return
 
-  const context = isRetry ? lastRequestContext.value : props.collectContext?.()
+  // Snapshot the JSON payload once so later page-state mutations cannot change
+  // the request associated with the same idempotency key. JSON also handles
+  // reactive context objects without passing Vue proxies to structuredClone.
+  let context: unknown
+  try {
+    const collected = isRetry ? lastRequestContext.value : props.collectContext?.()
+    context = isRetry || collected === undefined ? collected : JSON.parse(JSON.stringify(collected))
+  } catch {
+    addErrorMessage(resolvedLabels.value.requestFailed)
+    return
+  }
   const idempotencyKey = isRetry ? lastIdempotencyKey.value : crypto.randomUUID()
 
   if (!idempotencyKey) {

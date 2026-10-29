@@ -52,9 +52,10 @@ func DefaultQuotaPolicy() QuotaPolicy {
 	}
 }
 
-// WithDefaults fills omitted limits without replacing explicitly configured
-// values. This keeps direct Store construction consistent with component
-// configuration decoding.
+// WithDefaults preserves positive limits and replaces non-positive values with
+// defaults for direct Store construction. Zero does not mean unlimited. External
+// configuration requires positive values and applies defaults to omitted fields
+// before decoding; see memory.schema.json.
 func (p QuotaPolicy) WithDefaults() QuotaPolicy {
 	defaults := DefaultQuotaPolicy()
 	if p.MaxSessionsPerTenant <= 0 {

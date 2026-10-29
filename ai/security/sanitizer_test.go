@@ -62,6 +62,54 @@ func TestSanitizeTextCoversSecretVariants(t *testing.T) {
 	}
 }
 
+func TestSanitizeTextRedactsJSONCredentials(t *testing.T) {
+	const secret = "review-fixture-secret"
+	input := `{"password":"` + secret + `","enabled":true}`
+	result := DefaultSanitizer().SanitizeText(input)
+	if len(result.Findings) == 0 || strings.Contains(result.Value, secret) {
+		t.Fatalf("JSON credential was not redacted: value=%q findings=%#v", result.Value, result.Findings)
+	}
+	if result.Value != `{"password":"[REDACTED]","enabled":true}` {
+		t.Fatalf("JSON shape was not preserved: %q", result.Value)
+	}
+
+	encoded := base64.StdEncoding.EncodeToString([]byte(input))
+	encodedResult := DefaultSanitizer().SanitizeText(encoded)
+	if len(encodedResult.Findings) == 0 || strings.Contains(encodedResult.Value, encoded) {
+		t.Fatalf("encoded JSON credential was not redacted: value=%q findings=%#v", encodedResult.Value, encodedResult.Findings)
+	}
+}
+
+func TestSanitizeTextRedactsEscapedQuotesInJSONCredentials(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "escaped quote inside value",
+			input: `{"password":"prefix\"review-suffix-secret","enabled":true}`,
+			want:  `{"password":"[REDACTED]","enabled":true}`,
+		},
+		{
+			name:  "escaped backslash inside value",
+			input: `{"secret":"prefix\\review-suffix-secret","enabled":true}`,
+			want:  `{"secret":"[REDACTED]","enabled":true}`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := DefaultSanitizer().SanitizeText(tt.input)
+			if len(result.Findings) == 0 || strings.Contains(result.Value, "review-suffix-secret") {
+				t.Fatalf("escaped credential leaked: value=%q findings=%#v", result.Value, result.Findings)
+			}
+			if result.Value != tt.want {
+				t.Fatalf("SanitizeText() = %q, want %q", result.Value, tt.want)
+			}
+		})
+	}
+}
+
 func TestSanitizeHeadersURLAndNestedValues(t *testing.T) {
 	headers := http.Header{
 		"Authorization": {"Bearer " + testSecret},
@@ -117,6 +165,9 @@ func TestDerivedDataPolicyRejectsSecretsAndFiltersMetadata(t *testing.T) {
 	if _, findings, err = policy.Prepare("api_key="+testSecret, nil); !errors.Is(err, ErrSensitiveDerivedData) || len(findings) == 0 {
 		t.Fatalf("secret Prepare() error = %v, findings = %#v", err, findings)
 	}
+	if _, findings, err = policy.Prepare(`{"password":"`+testSecret+`"}`, nil); !errors.Is(err, ErrSensitiveDerivedData) || len(findings) == 0 {
+		t.Fatalf("JSON secret Prepare() error = %v, findings = %#v", err, findings)
+	}
 }
 
 func TestSanitizerBoundsEncodedCandidatesAndFindingPaths(t *testing.T) {
@@ -141,6 +192,7 @@ func TestRedactingHandlerSanitizesMessagesAttributesAndErrors(t *testing.T) {
 		"authorization", "Bearer "+testSecret,
 		"error", errors.New("password="+testSecret),
 		"nested", map[string]any{"api_key": testSecret})
+	logger.Info("JSON payload", "body", `{"password":"`+testSecret+`"}`)
 	if strings.Contains(output.String(), testSecret) {
 		t.Fatalf("log output leaked secret: %s", output.String())
 	}
