@@ -849,6 +849,7 @@ func (s *GormStore) PrepareInteraction(ctx context.Context, access security.Acce
 		return nil, errors.New("idempotency key, request hash, and positive lease are required")
 	}
 	var prepared conversationstore.PreparedInteraction
+	duplicateInsert := false
 	err := s.db.WithContext(normalizeContext(ctx)).Transaction(func(tx *gorm.DB) error {
 		session, err := s.findActiveSession(tx, access, sessionID, true)
 		if err != nil {
@@ -867,6 +868,9 @@ func (s *GormStore) PrepareInteraction(ctx context.Context, access security.Acce
 			}
 			if existing.Status == conversationstore.InteractionStatusRunning && existing.LeaseExpiresAt.After(now) {
 				return conversationstore.ErrInteractionInProgress
+			}
+			if err := s.releaseExpiredInteraction(tx, session, existing.ID, now); err != nil {
+				return err
 			}
 			var completedTurnCount int64
 			if err := tx.Model(&TurnModel{}).Where("session_id = ? AND completed_at IS NOT NULL", sessionID).Count(&completedTurnCount).Error; err != nil {
@@ -888,8 +892,12 @@ func (s *GormStore) PrepareInteraction(ctx context.Context, access security.Acce
 			if err := tx.Model(&InteractionModel{}).Where("id = ?", existing.ID).Updates(updates).Error; err != nil {
 				return err
 			}
-			if err := tx.Model(&SessionModel{}).Where("id = ?", sessionID).Update("active_interaction_id", existing.ID).Error; err != nil {
-				return err
+			claimed := tx.Model(&SessionModel{}).Where("id = ? AND active_interaction_id IS NULL", sessionID).Update("active_interaction_id", existing.ID)
+			if claimed.Error != nil {
+				return claimed.Error
+			}
+			if claimed.RowsAffected != 1 {
+				return conversationstore.ErrSessionBusy
 			}
 			prepared = conversationstore.PreparedInteraction{InteractionID: existing.ID, TurnID: turn.ID}
 			return nil
@@ -897,27 +905,8 @@ func (s *GormStore) PrepareInteraction(ctx context.Context, access security.Acce
 		if !errors.Is(err, gorm.ErrRecordNotFound) {
 			return err
 		}
-		if session.ActiveInteractionID != nil && *session.ActiveInteractionID != "" {
-			var active InteractionModel
-			activeErr := tx.Where("id = ?", *session.ActiveInteractionID).First(&active).Error
-			if activeErr == nil && active.Status == conversationstore.InteractionStatusRunning && active.LeaseExpiresAt.After(now) {
-				return conversationstore.ErrSessionBusy
-			}
-			if activeErr == nil {
-				if active.TurnID != 0 {
-					if err := s.deleteTurnAndReleaseUsage(tx, access.Subject.TenantID, sessionID, active.TurnID); err != nil && !errors.Is(err, conversationstore.ErrTurnNotFound) {
-						return err
-					}
-				}
-				if err := tx.Model(&InteractionModel{}).Where("id = ?", active.ID).Updates(map[string]any{"status": conversationstore.InteractionStatusFailed, "updated_at": now}).Error; err != nil {
-					return err
-				}
-			} else if !errors.Is(activeErr, gorm.ErrRecordNotFound) {
-				return activeErr
-			}
-			if err := tx.Model(&SessionModel{}).Where("id = ?", sessionID).Update("active_interaction_id", nil).Error; err != nil {
-				return err
-			}
+		if err := s.releaseExpiredInteraction(tx, session, "", now); err != nil {
+			return err
 		}
 		var completedTurnCount int64
 		if err := tx.Model(&TurnModel{}).Where("session_id = ? AND completed_at IS NOT NULL", sessionID).Count(&completedTurnCount).Error; err != nil {
@@ -938,6 +927,11 @@ func (s *GormStore) PrepareInteraction(ctx context.Context, access security.Acce
 			LeaseExpiresAt: now.Add(leaseDuration), CreatedAt: now, UpdatedAt: now,
 		}
 		if err := tx.Create(&interaction).Error; err != nil {
+			translated := err
+			if translator, ok := tx.Dialector.(gorm.ErrorTranslator); ok {
+				translated = translator.Translate(err)
+			}
+			duplicateInsert = errors.Is(translated, gorm.ErrDuplicatedKey)
 			return err
 		}
 		result := tx.Model(&SessionModel{}).Where("id = ? AND active_interaction_id IS NULL", sessionID).Update("active_interaction_id", interactionID)
@@ -951,25 +945,67 @@ func (s *GormStore) PrepareInteraction(ctx context.Context, access security.Acce
 		return nil
 	})
 	if err != nil {
-		// A concurrent insert can win the composite idempotency constraint
-		// between our lookup and create. Resolve that race to the same stable
-		// errors as the non-racing path instead of leaking a driver error.
-		var existing InteractionModel
-		lookupErr := s.db.WithContext(normalizeContext(ctx)).Where("tenant_id = ? AND owner_id = ? AND session_id = ? AND idempotency_key = ?", access.Subject.TenantID, access.Subject.UserID, sessionID, idempotencyKey).First(&existing).Error
-		if lookupErr == nil {
+		if !duplicateInsert {
+			return nil, err
+		}
+		// Resolve only an interaction insert conflict. Authorization and lifecycle
+		// must still hold after rollback, before any retained result is read.
+		lookupErr := s.db.WithContext(normalizeContext(ctx)).Transaction(func(tx *gorm.DB) error {
+			if _, accessErr := s.findActiveSession(tx, access, sessionID, true); accessErr != nil {
+				return accessErr
+			}
+			var existing InteractionModel
+			if lookupErr := tx.Where("tenant_id = ? AND owner_id = ? AND session_id = ? AND idempotency_key = ?", access.Subject.TenantID, access.Subject.UserID, sessionID, idempotencyKey).First(&existing).Error; lookupErr != nil {
+				return err
+			}
 			if existing.RequestHash != requestHash {
-				return nil, conversationstore.ErrIdempotencyConflict
+				return conversationstore.ErrIdempotencyConflict
 			}
 			if existing.Status == conversationstore.InteractionStatusCompleted {
-				return &conversationstore.PreparedInteraction{InteractionID: existing.ID, TurnID: existing.TurnID, Replayed: true, Result: existing.Result}, nil
+				prepared = conversationstore.PreparedInteraction{InteractionID: existing.ID, TurnID: existing.TurnID, Replayed: true, Result: existing.Result}
+				return nil
 			}
-			if existing.Status == conversationstore.InteractionStatusRunning {
-				return nil, conversationstore.ErrInteractionInProgress
+			if existing.Status == conversationstore.InteractionStatusRunning && existing.LeaseExpiresAt.After(time.Now()) {
+				return conversationstore.ErrInteractionInProgress
 			}
+			return err
+		})
+		if lookupErr != nil {
+			return nil, lookupErr
 		}
-		return nil, err
 	}
 	return &prepared, nil
+}
+
+// releaseExpiredInteraction runs under the Session lock in PrepareInteraction.
+// A live holder blocks a retry before any Turn or attempt is changed.
+func (s *GormStore) releaseExpiredInteraction(tx *gorm.DB, session *SessionModel, retryID string, now time.Time) error {
+	if session.ActiveInteractionID == nil || *session.ActiveInteractionID == "" {
+		return nil
+	}
+	if *session.ActiveInteractionID == retryID {
+		// The caller replaces this expired attempt. Release its pointer so the
+		// subsequent claim also changes a row on MySQL without clientFoundRows.
+		return tx.Model(&SessionModel{}).Where("id = ? AND active_interaction_id = ?", session.ID, retryID).Update("active_interaction_id", nil).Error
+	}
+	var active InteractionModel
+	activeErr := tx.Where("id = ?", *session.ActiveInteractionID).First(&active).Error
+	if activeErr == nil {
+		if active.Status == conversationstore.InteractionStatusRunning && active.LeaseExpiresAt.After(now) {
+			return conversationstore.ErrSessionBusy
+		}
+		if active.TurnID != 0 {
+			if err := s.deleteTurnAndReleaseUsage(tx, session.TenantID, session.ID, active.TurnID); err != nil && !errors.Is(err, conversationstore.ErrTurnNotFound) {
+				return err
+			}
+		}
+		if err := tx.Model(&InteractionModel{}).Where("id = ?", active.ID).Updates(map[string]any{"status": conversationstore.InteractionStatusFailed, "updated_at": now}).Error; err != nil {
+			return err
+		}
+	} else if !errors.Is(activeErr, gorm.ErrRecordNotFound) {
+		return activeErr
+	}
+	return tx.Model(&SessionModel{}).Where("id = ? AND active_interaction_id = ?", session.ID, *session.ActiveInteractionID).Update("active_interaction_id", nil).Error
 }
 
 func (s *GormStore) CompleteInteraction(ctx context.Context, access security.AccessContext, sessionID, interactionID string, turnID uint64, result string) error {

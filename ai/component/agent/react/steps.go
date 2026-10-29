@@ -149,9 +149,8 @@ func (ra *ReActAgent) runIteration(ctx context.Context, chans *agent.Channels, h
 		if accessErr != nil {
 			return false, accessErr
 		}
-		if state == nil {
-			return false, fmt.Errorf("interaction state is required")
-		}
+		// Revalidate session access and active-turn existence before each model call.
+		// The emptiness result is intentionally ignored; keep using the stable snapshot.
 		if _, err := ra.messageStore.IsTurnEmpty(ctx, access, s.Session, turnID); err != nil {
 			return false, err
 		}
@@ -214,6 +213,7 @@ func (ra *ReActAgent) runIteration(ctx context.Context, chans *agent.Channels, h
 			if err != nil {
 				return false, err
 			}
+			// Legacy HistoryMemory callers may run without interaction state.
 			if state != nil {
 				state.messages = append(state.messages, message)
 			}

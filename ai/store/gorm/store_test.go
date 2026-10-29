@@ -21,6 +21,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"testing"
 	"time"
@@ -80,6 +81,112 @@ func TestGormStore_CompilationContract(t *testing.T) {
 	storetest.RunCompilationContractTests(t, func() conversationstore.BackendStore {
 		return newSQLiteStore(t, filepath.Join(t.TempDir(), "compilation.db"), 10)
 	})
+}
+
+func TestGormStore_BlockedRetryPreservesRecords(t *testing.T) {
+	s := newSQLiteStore(t, filepath.Join(t.TempDir(), "blocked.db"))
+	ctx := context.Background()
+	access := testutils.TestAccess()
+	session := testutils.TestSession("blocked-session", time.Now())
+	if err := s.Create(ctx, access, session); err != nil {
+		t.Fatal(err)
+	}
+	a, err := s.PrepareInteraction(ctx, access, session.ID, "A", "hash-A", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.FailInteraction(ctx, access, session.ID, a.InteractionID, a.TurnID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.PrepareInteraction(ctx, access, session.ID, "B", "hash-B", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	readInteractions := func() []gormstore.InteractionModel {
+		t.Helper()
+		var records []gormstore.InteractionModel
+		if err := s.DB().Order("id").Find(&records).Error; err != nil {
+			t.Fatal(err)
+		}
+		return records
+	}
+	before := readInteractions()
+	if _, err := s.PrepareInteraction(ctx, access, session.ID, "A", "hash-A", time.Minute); !errors.Is(err, conversationstore.ErrSessionBusy) {
+		t.Fatalf("retry error = %v, want ErrSessionBusy", err)
+	}
+	if after := readInteractions(); !reflect.DeepEqual(before, after) {
+		t.Fatalf("blocked retry changed interactions: before=%#v after=%#v", before, after)
+	}
+}
+
+func TestGormStore_ResolvesOnlyDuplicateInteractionInsert(t *testing.T) {
+	for _, outcome := range []string{"completed", "running", "conflict", "database-error"} {
+		t.Run(outcome, func(t *testing.T) {
+			s := newSQLiteStore(t, filepath.Join(t.TempDir(), "race.db"))
+			ctx := context.Background()
+			access := testutils.TestAccess()
+			session := testutils.TestSession("race-session", time.Now())
+			if err := s.Create(ctx, access, session); err != nil {
+				t.Fatal(err)
+			}
+			original, err := s.PrepareInteraction(ctx, access, session.ID, "key", "hash", time.Minute)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if outcome != "running" {
+				if err := s.CompleteInteraction(ctx, access, session.ID, original.InteractionID, original.TurnID, "answer"); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				// Model the Session snapshot before the winning transaction claimed it.
+				if err := s.DB().Model(&gormstore.SessionModel{}).Where("id = ?", session.ID).Update("active_interaction_id", nil).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			injected := false
+			queryFailure := errors.New("query failed")
+			// Hide the winner from the first lookup. The following real SQLite
+			// unique constraint failure exercises translation with TranslateError off.
+			if err := s.DB().Callback().Query().After("gorm:query").Register("test:interaction-race", func(tx *gorm.DB) {
+				if !injected && tx.Statement.Table == "ai_interactions" {
+					injected = true
+					if outcome == "database-error" {
+						tx.AddError(queryFailure)
+					} else {
+						tx.AddError(gorm.ErrRecordNotFound)
+					}
+				}
+			}); err != nil {
+				t.Fatal(err)
+			}
+			hash := "hash"
+			if outcome == "conflict" {
+				hash = "other-hash"
+			}
+			prepared, err := s.PrepareInteraction(ctx, access, session.ID, "key", hash, time.Minute)
+			switch outcome {
+			case "completed":
+				if err != nil || prepared == nil || !prepared.Replayed || prepared.Result != "answer" || prepared.InteractionID != original.InteractionID {
+					t.Fatalf("duplicate insert replay = %#v, %v", prepared, err)
+				}
+			case "running":
+				if !errors.Is(err, conversationstore.ErrInteractionInProgress) {
+					t.Fatalf("duplicate insert error = %v, want ErrInteractionInProgress", err)
+				}
+			case "conflict":
+				if !errors.Is(err, conversationstore.ErrIdempotencyConflict) {
+					t.Fatalf("duplicate insert error = %v, want ErrIdempotencyConflict", err)
+				}
+			case "database-error":
+				if !errors.Is(err, queryFailure) || prepared != nil {
+					t.Fatalf("database error masked: %#v, %v", prepared, err)
+				}
+			}
+			var count int64
+			if err := s.DB().Model(&gormstore.TurnModel{}).Where("session_id = ?", session.ID).Count(&count).Error; err != nil || count != 1 {
+				t.Fatalf("Turn count after rollback = %d, %v, want 1", count, err)
+			}
+		})
+	}
 }
 
 func TestGormStore_QuotaContract(t *testing.T) {

@@ -37,8 +37,14 @@ import (
 
 const jwtClaimsContextKey = "dubbo-admin-ai.jwt-claims"
 
-// Cache lifetime after success and retry cooldown after failure.
-const jwksRefreshInterval = 30 * time.Second
+const (
+	// Cache lifetime after success and retry cooldown after failure.
+	jwksRefreshInterval = 30 * time.Second
+	// A shared refresh must not hang forever, but it must outlive the request
+	// that triggered it. Otherwise one client disconnecting would abort the
+	// fetch and start the failure cooldown for every other caller.
+	jwksFetchTimeout = 10 * time.Second
+)
 
 type jwksRefresh struct {
 	done chan struct{}
@@ -124,11 +130,20 @@ func (v *JWTVerifier) accessContext(claims *Claims) (security.AccessContext, err
 		Roles: claims.Roles, Scopes: claims.Scopes, AuthMethod: security.AuthMethodJWT})
 }
 
+// isPublicProbe reports the explicit unauthenticated health probes. Every other
+// path, including future routes outside the AI prefix, requires authentication.
+func isPublicProbe(path string) bool {
+	switch path {
+	case "/health", "/healthz", "/readyz":
+		return true
+	default:
+		return false
+	}
+}
+
 func (v *JWTVerifier) Middleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// Explicit public probes only; all other paths require authentication.
-		switch c.Request.URL.Path {
-		case "/health", "/healthz", "/readyz":
+		if isPublicProbe(c.Request.URL.Path) {
 			c.Next()
 			return
 		}
@@ -226,9 +241,12 @@ func (v *JWTVerifier) refresh(ctx context.Context) error {
 	v.keys = nil
 	v.mu.Unlock()
 
-	// All concurrent misses share this attempt. The initiating request owns its
-	// context; cancellation also ends the fetch for the waiting requests.
-	err := v.fetchKeys(ctx)
+	// All concurrent misses share this attempt. Detach the fetch from the
+	// initiating request: a client disconnect must not abort the shared refresh
+	// or start a cooldown that rejects valid tokens for every other caller.
+	fetchCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), jwksFetchTimeout)
+	defer cancel()
+	err := v.fetchKeys(fetchCtx)
 	v.mu.Lock()
 	flight.err = err
 	v.nextRefresh = v.clock().Add(jwksRefreshInterval)

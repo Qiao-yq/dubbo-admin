@@ -460,6 +460,91 @@ func RunStoreContractTests(t *testing.T, newStore func() conversationstore.Backe
 		}
 	})
 
+	for _, expired := range []bool{false, true} {
+		t.Run(fmt.Sprintf("interaction retry respects session lease expired=%t", expired), func(t *testing.T) {
+			ctx := context.Background()
+			s := withAccess(newStore())
+			now := time.Now()
+			session := &conversationstore.Session{ID: "retry-busy-session", CreatedAt: now, UpdatedAt: now, Status: conversationstore.SessionStatusActive}
+			if err := s.Create(ctx, session); err != nil {
+				t.Fatal(err)
+			}
+			lease := time.Minute
+			if expired {
+				lease = time.Nanosecond
+			}
+			a, err := s.BackendStore.PrepareInteraction(ctx, s.access, session.ID, "A", "hash-A", lease)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !expired {
+				if err := s.BackendStore.FailInteraction(ctx, s.access, session.ID, a.InteractionID, a.TurnID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			b, err := s.BackendStore.PrepareInteraction(ctx, s.access, session.ID, "B", "hash-B", time.Minute)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if prepared, err := s.BackendStore.PrepareInteraction(ctx, s.access, session.ID, "A", "hash-A", time.Minute); !errors.Is(err, conversationstore.ErrSessionBusy) || prepared != nil {
+				t.Fatalf("retry A = %#v, %v, want ErrSessionBusy", prepared, err)
+			}
+			if err := s.AddHistoryToTurn(ctx, session.ID, a.TurnID, ai.NewUserTextMessage("stale")); !errors.Is(err, conversationstore.ErrTurnNotFound) {
+				t.Fatalf("write old A error = %v, want ErrTurnNotFound", err)
+			}
+			if err := s.AddHistoryToTurn(ctx, session.ID, b.TurnID, ai.NewUserTextMessage("B")); err != nil {
+				t.Fatalf("write B after rejected retry: %v", err)
+			}
+			if err := s.BackendStore.CompleteInteraction(ctx, s.access, session.ID, b.InteractionID, b.TurnID, "answer B"); err != nil {
+				t.Fatal(err)
+			}
+			retried, err := s.BackendStore.PrepareInteraction(ctx, s.access, session.ID, "A", "hash-A", time.Minute)
+			if err != nil || retried.InteractionID != a.InteractionID || retried.TurnID == a.TurnID {
+				t.Fatalf("retry A after B completed = %#v, %v", retried, err)
+			}
+		})
+	}
+
+	for _, state := range []string{"deleted", "expired", "unauthorized"} {
+		t.Run("interaction replay rejects "+state+" session", func(t *testing.T) {
+			ctx := context.Background()
+			s := withAccess(newStore())
+			now := time.Now()
+			session := &conversationstore.Session{ID: "retained-result-session", CreatedAt: now, UpdatedAt: now, Status: conversationstore.SessionStatusActive}
+			if err := s.Create(ctx, session); err != nil {
+				t.Fatal(err)
+			}
+			prepared, err := s.BackendStore.PrepareInteraction(ctx, s.access, session.ID, "key", "hash", time.Minute)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := s.BackendStore.CompleteInteraction(ctx, s.access, session.ID, prepared.InteractionID, prepared.TurnID, "retained answer"); err != nil {
+				t.Fatal(err)
+			}
+			access := s.access
+			want := conversationstore.ErrSessionNotFound
+			switch state {
+			case "deleted":
+				if err := s.Delete(ctx, session.ID); err != nil {
+					t.Fatal(err)
+				}
+			case "expired":
+				if err := s.Touch(ctx, session.ID, now.Add(-25*time.Hour)); err != nil {
+					t.Fatal(err)
+				}
+				want = conversationstore.ErrSessionExpired
+			case "unauthorized":
+				access = security.MustAccessContext(security.Subject{TenantID: access.Subject.TenantID, UserID: "other-user", AuthMethod: security.AuthMethodStatic})
+			}
+			for _, hash := range []string{"hash", "different-hash"} {
+				replayed, err := s.BackendStore.PrepareInteraction(ctx, access, session.ID, "key", hash, time.Minute)
+				if !errors.Is(err, want) || replayed != nil {
+					t.Fatalf("replay = %#v, %v, want %v", replayed, err, want)
+				}
+			}
+		})
+	}
+
 	t.Run("event quota is atomic", func(t *testing.T) {
 		ctx := context.Background()
 		s := withAccess(newStore())

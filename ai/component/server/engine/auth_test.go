@@ -210,21 +210,40 @@ func TestJWKSRefreshWindowAndFailure(t *testing.T) {
 	}
 }
 
-func TestJWKSRefreshRequestCancellation(t *testing.T) {
+func TestJWKSRefreshSurvivesRequestCancellation(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
 	started := make(chan struct{})
-	cancelled := make(chan struct{})
+	release := make(chan struct{})
+	var startOnce sync.Once
+	var requests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		close(started)
-		<-r.Context().Done()
-		close(cancelled)
+		if requests.Add(1) == 1 {
+			_ = json.NewEncoder(w).Encode(jwksForTest(map[string]*rsa.PublicKey{"known": &key.PublicKey}))
+			return
+		}
+		startOnce.Do(func() { close(started) })
+		select {
+		case <-release:
+		case <-r.Context().Done():
+			return
+		}
+		_ = json.NewEncoder(w).Encode(jwksForTest(map[string]*rsa.PublicKey{"known": &key.PublicKey}))
 	}))
 	defer server.Close()
-	v := &JWTVerifier{client: NewJWKSClient(server.URL, server.Client()), keys: map[string]*rsa.PublicKey{}}
+	v, err := NewJWTVerifier(JWTAuthConfig{JWKSURL: server.URL, Issuer: "admin", Audience: "ai"}, server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
 	router := gin.New()
 	router.Use(v.Middleware())
-	router.GET("/api/v1/ai/test", func(c *gin.Context) { c.Status(http.StatusOK) })
+	router.GET("/api/v1/ai/test", func(c *gin.Context) { c.Status(http.StatusNoContent) })
+
+	expireJWKSWindow(v)
+
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/ai/test", nil).WithContext(ctx)
 	// A parseable unverified header is sufficient to reach the key lookup.
 	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"RS256","kid":"unknown"}`))
@@ -232,30 +251,37 @@ func TestJWKSRefreshRequestCancellation(t *testing.T) {
 	done := make(chan struct{})
 	recorder := httptest.NewRecorder()
 	go func() { router.ServeHTTP(recorder, req); close(done) }()
+
 	select {
 	case <-started:
 	case <-time.After(time.Second):
 		t.Fatal("fetch not started")
 	}
-	// A concurrent waiter can cancel independently of the initiating request.
+	// A concurrent waiter can cancel independently without affecting the shared
+	// refresh.
 	waitCtx, cancelWait := context.WithCancel(context.Background())
 	cancelWait()
 	if err := v.refresh(waitCtx); err != context.Canceled {
 		t.Fatalf("wait cancellation: %v", err)
 	}
+	// The initiator disconnects. The shared refresh must keep going and must not
+	// poison the cache or start a cooldown for every other caller.
 	cancel()
+	close(release)
 	select {
 	case <-done:
 	case <-time.After(time.Second):
-		t.Fatal("request cancellation did not stop refresh")
-	}
-	select {
-	case <-cancelled:
-	case <-time.After(time.Second):
-		t.Fatal("upstream request not cancelled")
+		t.Fatal("cancelled request did not finish")
 	}
 	if recorder.Code != http.StatusUnauthorized || recorder.Header().Get("WWW-Authenticate") != "Bearer" {
 		t.Fatalf("unexpected response: %d", recorder.Code)
+	}
+
+	// A valid token must work immediately, without waiting out a 30s cooldown.
+	valid := signAITestToken(t, key, "known", "admin", "ai", "user", time.Now().Add(time.Minute), time.Now())
+	assertAIStatus(t, router, http.MethodGet, "/api/v1/ai/test", "Bearer "+valid, http.StatusNoContent)
+	if got := requests.Load(); got != 2 {
+		t.Fatalf("JWKS requests = %d, want initial load and one shared refresh", got)
 	}
 }
 
