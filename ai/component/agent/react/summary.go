@@ -77,7 +77,11 @@ func (ra *ReActAgent) generateSummary(ctx context.Context, r summary.GenerateReq
 		emitHook(ra.hookManager, ctx, hook)
 	}()
 	t := comp.Template{ID: "conversation-summary", Version: summary.TemplateVersion, Shared: summary.SystemPrompt}
-	request := comp.CompileRequest{CollectRequest: comp.CollectRequest{Access: r.Access, SessionID: r.SessionID, InteractionID: r.InteractionID, TurnID: 1, Turns: []store.TurnContext{{ID: 1, TenantID: r.Access.Subject.TenantID, OwnerID: r.Access.Subject.UserID, Messages: []*ai.Message{ai.NewUserMessage(ai.NewTextPart(summary.Input(r)))}}}, MaxItems: 1, MaxBytes: ra.compilerSpec.MaxContextBytes, MaxCollectBytes: ra.compilerSpec.MaxCollectBytes, NotAfter: time.Now()}, Model: r.Model, Phase: "answer", TemplateRef: t.Ref(), ContextTokens: ra.compilerSpec.ContextTokens, OutputTokens: r.OutputTokens, SafetyMargin: ra.compilerSpec.SafetyMargin}
+	input, err := summary.Input(r)
+	if err != nil {
+		return "", fmt.Errorf("SUMMARY_INPUT_INVALID: %w", err)
+	}
+	request := comp.CompileRequest{CollectRequest: comp.CollectRequest{Access: r.Access, SessionID: r.SessionID, InteractionID: r.InteractionID, TurnID: 1, Turns: []store.TurnContext{{ID: 1, TenantID: r.Access.Subject.TenantID, OwnerID: r.Access.Subject.UserID, Messages: []*ai.Message{ai.NewUserMessage(ai.NewTextPart(input))}}}, MaxItems: 1, MaxBytes: ra.compilerSpec.MaxContextBytes, MaxCollectBytes: ra.compilerSpec.MaxCollectBytes, NotAfter: time.Now()}, Model: r.Model, Phase: "answer", TemplateRef: t.Ref(), ContextTokens: ra.compilerSpec.ContextTokens, OutputTokens: r.OutputTokens, SafetyMargin: ra.compilerSpec.SafetyMargin}
 	if r.ContextTokens > 0 {
 		request.ContextTokens = r.ContextTokens
 	}

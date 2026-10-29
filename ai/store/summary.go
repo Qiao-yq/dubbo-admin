@@ -53,6 +53,8 @@ func SummaryArtifactID(session string) string {
 // Sequence values are opaque keyset positions, never Turn IDs or offsets.
 type HistorySnapshot struct {
 	SessionID  string
+	TenantID   string
+	OwnerID    string
 	ActiveTurn uint64
 	Upper      uint64
 	Target     uint64
@@ -336,7 +338,7 @@ func ValidateSummaryCommit(a security.AccessContext, c SummaryCommit, old *Summa
 	if old != nil {
 		version = old.Version
 	}
-	if c.ExpectedVersion != version || v.Version != version+1 || v.SchemaVersion != SummarySchemaVersion || v.TemplateVersion == "" || len(v.TemplateVersion) > 128 || v.Model == "" || len(v.Model) > 256 || v.TenantID != a.Subject.TenantID || v.OwnerID != a.Subject.UserID || v.SessionID != c.Read.Snapshot.SessionID || c.Digest != batch.Digest || c.Read.Cursor != SummaryCursorFor(old) || v.SourceUpper != c.Read.Snapshot.Upper || v.Target != c.Read.Snapshot.Target {
+	if c.ExpectedVersion != version || v.Version != version+1 || v.SchemaVersion != SummarySchemaVersion || v.TemplateVersion == "" || len(v.TemplateVersion) > 128 || v.Model == "" || len(v.Model) > 256 || v.TenantID != c.Read.Snapshot.TenantID || v.OwnerID != c.Read.Snapshot.OwnerID || v.SessionID != c.Read.Snapshot.SessionID || c.Digest != batch.Digest || c.Read.Cursor != SummaryCursorFor(old) || v.SourceUpper != c.Read.Snapshot.Upper || v.Target != c.Read.Snapshot.Target {
 		return ErrContextConflict
 	}
 	// References are derived from validated output, keeping provenance bounded.
