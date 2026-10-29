@@ -136,10 +136,12 @@ type CompilationDecision struct {
 type CompilationReport struct {
 	ContextTokens                                                                int
 	InteractionID, CompilerVersion, PolicyVersion, TemplateRef, EstimatorVersion string
-	InputTokens, ReservedOutput, SafetyMargin                                    int
-	Decisions                                                                    []CompilationDecision
-	Degraded                                                                     bool
-	DegradationReasons                                                           []string
+	// InputTokens is a conservative UTF-8 JSON byte-count upper bound
+	// (EstimatorVersion utf8-json-bytes-v1), not provider-reported token usage.
+	InputTokens, ReservedOutput, SafetyMargin int
+	Decisions                                 []CompilationDecision
+	Degraded                                  bool
+	DegradationReasons                        []string
 }
 type CompiledRequest struct {
 	ContextTokens                            int
