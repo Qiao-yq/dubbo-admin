@@ -93,6 +93,12 @@ func (r *Router) setupRoutes(corsOrigins []string) {
 
 func authenticationMiddleware(authenticator security.Authenticator) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		// The Router is the production authentication path; keep the explicit
+		// public probes exempt here as well, or tokenless health checks fail.
+		if isPublicProbe(c.Request.URL.Path) {
+			c.Next()
+			return
+		}
 		access, err := authenticator.Authenticate(c.Request)
 		if err != nil || access.Validate() != nil || access.IsSystem() {
 			c.Header("WWW-Authenticate", "Bearer")

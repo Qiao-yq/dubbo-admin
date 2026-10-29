@@ -52,6 +52,37 @@ func TestRouterProtectsRoutesOutsideAIPrefix(t *testing.T) {
 	assertAIStatus(t, router.GetEngine(), http.MethodGet, "/future-endpoint", "", http.StatusUnauthorized)
 }
 
+func TestRouterHealthProbesArePublic(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jwksServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(jwksForTest(map[string]*rsa.PublicKey{"key": &key.PublicKey}))
+	}))
+	defer jwksServer.Close()
+	auth, err := NewJWTVerifier(JWTAuthConfig{JWKSURL: jwksServer.URL, Issuer: "issuer", Audience: "audience"}, jwksServer.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := memorystore.NewMemoryStore()
+	router, err := NewRouter(nil, store, store, auth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = router.Close() })
+	// Mirror ServerComponent.Start, which registers probes on the routed engine.
+	for _, path := range []string{"/health", "/healthz", "/readyz"} {
+		router.GetEngine().GET(path, func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"status": "ok"}) })
+	}
+	for _, path := range []string{"/health", "/healthz", "/readyz"} {
+		assertAIStatus(t, router.GetEngine(), http.MethodGet, path, "", http.StatusOK)
+	}
+	// Everything outside the explicit probe list still requires authentication.
+	assertAIStatus(t, router.GetEngine(), http.MethodGet, "/api/v1/ai/sessions", "", http.StatusUnauthorized)
+}
+
 func TestJWTAuthenticationFlowsIntoSessionOwnership(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	secret, err := rsa.GenerateKey(rand.Reader, 2048)
