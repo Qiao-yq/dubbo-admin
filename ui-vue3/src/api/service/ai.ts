@@ -17,7 +17,7 @@
 
 import axios, { type InternalAxiosRequestConfig } from 'axios'
 import { AccessTokenManager, accessTokenManager } from '@/auth/accessToken'
-import type { AIContextSnapshot } from '@/ai-context'
+import { AIAPIError, type AIChatRequestContext } from './aiMemory'
 import type { ChatResponse, ChatService, Session } from '@/components/ai-chat/types'
 export type { ChatMessage, ChatResponse, Session } from '@/components/ai-chat/types'
 
@@ -82,7 +82,7 @@ export async function authenticatedFetch(
   return execute(false)
 }
 // AI 服务接口
-export const aiService: ChatService<AIContextSnapshot> = {
+export const aiService: ChatService<AIChatRequestContext> = {
   // 创建新会话
   async createSession(): Promise<string> {
     const response = await aiClient.post('/sessions')
@@ -110,7 +110,7 @@ export const aiService: ChatService<AIContextSnapshot> = {
   async sendChatMessage(
     message: string,
     sessionId?: string,
-    context?: AIContextSnapshot,
+    context?: AIChatRequestContext,
     idempotencyKey?: string
   ): Promise<ReadableStream<Uint8Array>> {
     if (!idempotencyKey) {
@@ -131,14 +131,15 @@ export const aiService: ChatService<AIContextSnapshot> = {
       body: JSON.stringify({
         message,
         sessionID: sessionId,
-        context
+        matchContext: context?.matchContext
       }),
       mode: 'cors', // 允许跨域
       credentials: 'omit'
     })
 
     if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`)
+      const body = await response.json().catch(() => ({}))
+      throw new AIAPIError(body.code || 'REQUEST_FAILED', response.status)
     }
     if (!response.body) {
       throw new Error('AI service returned an empty response body')

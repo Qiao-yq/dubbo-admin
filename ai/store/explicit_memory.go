@@ -369,6 +369,13 @@ func MemoryMatches(r ExplicitMemory, m MatchContext) bool {
 func MemoryLive(l MemoryLedger, r ExplicitMemory, now time.Time) bool {
 	return r.Status == "confirmed" && r.Generation == l.Generation && (r.ExpiresAt == nil || r.ExpiresAt.After(now))
 }
+
+// MemoryManageable includes records whose own expiry has passed so users can
+// inspect and remove records that still consume quota. Source-invalid records
+// are returned as metadata-only tombstones by MemoryList.
+func MemoryManageable(l MemoryLedger, r ExplicitMemory) bool {
+	return r.Status == "confirmed" && r.Generation == l.Generation
+}
 func SortMemories(records []ExplicitMemory) {
 	sort.Slice(records, func(i, j int) bool {
 		if records[i].CanonicalKey != records[j].CanonicalKey {
@@ -419,13 +426,19 @@ func MemoryList(l MemoryLedger, cursor string, limit int, now time.Time, sourceL
 	SortMemories(records)
 	for _, r := range records {
 		position := r.CanonicalKey + ":" + r.ID
-		if position <= cursor || !MemoryLive(l, r, now) || (r.SourceSessionID != "" && !sourceLive(r.SourceSessionID)) {
+		if position <= cursor || !MemoryManageable(l, r) {
 			continue
 		}
 		if len(out.Records) == limit {
 			last := out.Records[len(out.Records)-1]
 			out.NextCursor = last.CanonicalKey + ":" + last.ID
 			break
+		}
+		if r.SourceSessionID != "" && !sourceLive(r.SourceSessionID) {
+			// Keep the ID/version so the owner can delete the quota-consuming
+			// record, but never expose content after its source is inaccessible.
+			r.Value = ""
+			r.Status = "source_unavailable"
 		}
 		out.Records = append(out.Records, r)
 	}

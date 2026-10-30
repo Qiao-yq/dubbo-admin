@@ -7,6 +7,34 @@ tags:
   - name: 聊天
   - name: 会话管理
 paths:
+  /ai/memory-options:
+    get:
+      summary: 当前用户的记忆项目与任务选项
+      description: 只返回授权项目的稳定 ID，不暴露租户或成员列表；项目选择不构成工具授权。
+      responses:
+        "200":
+          description: 选项列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      projects:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            id: {type: string}
+                      task_types:
+                        type: array
+                        items: {type: string, enum: [diagnosis, configuration, inspection]}
+        "401":
+          description: 需要认证
+        "503":
+          description: 存储或自定义项目目录的选项能力不可用
   /ai/chat/stream:
     post:
       summary: 流式聊天
