@@ -17,14 +17,10 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { aiService } from '../ai'
-import type { AIContextSnapshot } from '@/ai-context'
+import type { AIChatRequestContext } from '../aiMemory'
 
-const context: AIContextSnapshot = {
-  version: 1,
-  capturedAt: '2026-07-19T13:00:00.000Z',
-  global: { locale: 'cn' },
-  page: { path: '/home' },
-  scope: { mesh: 'nacos2.5' }
+const context: AIChatRequestContext = {
+  matchContext: { projectRef: 'project-a', taskType: 'diagnosis' }
 }
 
 describe('aiService.sendChatMessage', () => {
@@ -32,7 +28,7 @@ describe('aiService.sendChatMessage', () => {
     vi.unstubAllGlobals()
   })
 
-  it('sends the selected page context with the existing chat payload', async () => {
+  it('sends explicit matching at the top level accepted by strict chat decoding', async () => {
     const stream = new ReadableStream()
     const fetchMock = vi.fn().mockResolvedValue({ ok: true, body: stream })
     vi.stubGlobal('fetch', fetchMock)
@@ -44,11 +40,11 @@ describe('aiService.sendChatMessage', () => {
     expect(JSON.parse(String(request.body))).toEqual({
       message: 'hello',
       sessionID: 'session-1',
-      context
+      matchContext: context.matchContext
     })
   })
 
-  it('omits context when page context is disabled', async () => {
+  it('omits matching when nothing is selected', async () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: true, body: new ReadableStream() })
     vi.stubGlobal('fetch', fetchMock)
 

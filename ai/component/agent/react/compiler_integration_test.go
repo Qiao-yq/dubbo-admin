@@ -50,10 +50,11 @@ import (
 )
 
 type providerFixture struct {
-	summaries bool
-	mu        sync.Mutex
-	requests  []map[string]any
-	first     string
+	summaryPadding int
+	summaries      bool
+	mu             sync.Mutex
+	requests       []map[string]any
+	first          string
 }
 
 func (f *providerFixture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -100,6 +101,10 @@ func (f *providerFixture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				payload := input.Previous
 				if strings.Contains(input.Evidence, "initial goal: identify outage") && len(payload.Goals) == 0 {
 					payload.Goals = []store.SummaryStatement{{Text: "earliest objective preserved", Sources: []string{input.Source}}}
+				}
+				if f.summaryPadding > 0 && len(payload.Goals) > 0 {
+					padding := strings.Repeat("bounded context ", f.summaryPadding/16+1)
+					payload.Goals[0].Text = "earliest objective preserved " + padding[:f.summaryPadding]
 				}
 				body, _ := json.Marshal(payload)
 				encoded, _ := json.Marshal(map[string]any{"role": "assistant", "content": string(body)})

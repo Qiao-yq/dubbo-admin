@@ -115,3 +115,44 @@ func TestMatchHashCompatibility(t *testing.T) {
 		t.Fatal("matching not hashed")
 	}
 }
+
+func TestMemoryOptionsApplyCatalogOwnership(t *testing.T) {
+	a := testutils.TestAccess()
+	catalog := ProjectCatalog{
+		{ID: "b", TenantID: a.Subject.TenantID, OwnerIDs: []string{a.Subject.UserID}},
+		{ID: "a", TenantID: a.Subject.TenantID, OwnerIDs: []string{a.Subject.UserID}},
+		{ID: "a", TenantID: a.Subject.TenantID, OwnerIDs: []string{a.Subject.UserID}},
+		{ID: "other-user", TenantID: a.Subject.TenantID, OwnerIDs: []string{"someone-else"}},
+		{ID: "other-tenant", TenantID: "another-tenant", OwnerIDs: []string{a.Subject.UserID}},
+	}
+	backend := memorystore.NewMemoryStore()
+	auth, err := security.NewStaticAuthenticator(a.Subject)
+	if err != nil {
+		t.Fatal(err)
+	}
+	router, err := NewRouter(&captureAgent{}, backend, backend, auth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = router.Close() })
+	router.SetMatchContextValidator(catalog)
+	w := httptest.NewRecorder()
+	router.GetEngine().ServeHTTP(w, httptest.NewRequest("GET", "/api/v1/ai/memory-options", nil))
+	if w.Code != 200 {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	var result struct {
+		Data MemoryOptions `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Data.Projects) != 2 || result.Data.Projects[0].ID != "a" || result.Data.Projects[1].ID != "b" || len(result.Data.TaskTypes) != 3 {
+		t.Fatal("unfiltered or unstable options", w.Body.String())
+	}
+	for _, field := range []string{"tenant_id", "owner_ids", "other-user", "other-tenant"} {
+		if strings.Contains(w.Body.String(), field) {
+			t.Fatal("private catalog metadata exposed", field)
+		}
+	}
+}

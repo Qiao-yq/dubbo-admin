@@ -2,7 +2,8 @@
 
 Memory is a current-user fact store, distinct from the in-process conversation
 backend. There is no automatic extraction, shared/resource scope, semantic search,
-or UI in this PR. The memory panel and chat selectors belong to PR 4.
+or UI in PR 3. PR 4 adds the memory panel and chat selectors; see
+[user controls and acceptance](../../../docs/ai-issue-1539-pr4-user-controls.md).
 
 ## Configuration
 
@@ -66,6 +67,7 @@ and enabled true.
 | `DELETE /memories/:id` | Requires generation, state_version and record version |
 | `POST /memories/clear` | Requires generation and state_version; increments generation |
 | `GET /memory-settings` | Current generation, state_version and enabled |
+| `GET /memory-options` | Current-user project IDs and task types (PR 4) |
 | `PUT /memory-settings` | Requires generation, state_version and enabled |
 
 Example creation:

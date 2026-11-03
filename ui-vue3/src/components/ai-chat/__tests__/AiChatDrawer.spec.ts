@@ -19,6 +19,8 @@ import { defineComponent, h, reactive, ref } from 'vue'
 import { flushPromises, mount } from '@vue/test-utils'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import AiChatDrawer from '../AiChatDrawer.vue'
+import { AIAPIError } from '@/api/service/aiMemory'
+import { chatErrorKey } from '../errors'
 import type { ChatService, ChatSuggestion } from '../types'
 
 const DrawerStub = defineComponent({
@@ -129,6 +131,21 @@ describe('AiChatDrawer', () => {
     vi.restoreAllMocks()
   })
 
+  it('maps chat transport errors independently from memory errors', () => {
+    expect(chatErrorKey(new AIAPIError('SESSION_BUSY', 409))).toBe('aiChat.errors.SESSION_BUSY')
+    expect(chatErrorKey(new AIAPIError('INTERACTION_IN_PROGRESS', 409))).toBe(
+      'aiChat.errors.INTERACTION_IN_PROGRESS'
+    )
+    expect(chatErrorKey(new AIAPIError('IDEMPOTENCY_CONFLICT', 409))).toBe(
+      'aiChat.errors.IDEMPOTENCY_CONFLICT'
+    )
+    expect(chatErrorKey(new AIAPIError('RESOURCE_EXHAUSTED', 429))).toBe(
+      'aiChat.errors.RESOURCE_EXHAUSTED'
+    )
+    expect(chatErrorKey(new AIAPIError('UNKNOWN', 500))).toBe('aiChat.errors.SERVER_ERROR')
+    expect(chatErrorKey(new Error('offline'))).toBeUndefined()
+  })
+
   it('sends messages through the injected service with collected context', async () => {
     const context = { page: 'instances', resourceId: 'demo' }
     const service: ChatService<unknown> = {
@@ -186,7 +203,9 @@ describe('AiChatDrawer', () => {
     expect(retryCall[2]).toEqual({ page: 'instances', selection: { version: 1 } })
     expect(retryCall[3]).toBe(firstCall[3])
     expect(collectContext).toHaveBeenCalledOnce()
-    const renderedMessages = wrapper.findComponent(MessageListStub).props('messages') as Array<{ role: string }>
+    const renderedMessages = wrapper.findComponent(MessageListStub).props('messages') as Array<{
+      role: string
+    }>
     expect(renderedMessages).toHaveLength(2)
     expect(renderedMessages[0]).toBe(originalUserMessage)
     expect(renderedMessages.map((item) => item.role)).toEqual(['user', 'assistant'])
