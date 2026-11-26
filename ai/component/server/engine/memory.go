@@ -15,6 +15,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"sort"
 	"strconv"
 	"time"
 
@@ -36,6 +37,62 @@ type MemoryProject struct {
 // ProjectCatalog is a server-owned MVP catalog. Membership is not resource or
 // tool authorization. An empty catalog rejects every nonempty project reference.
 type ProjectCatalog []MemoryProject
+
+type MemoryOptions struct {
+	Projects  []MemoryProjectOption `json:"projects"`
+	TaskTypes []string              `json:"task_types"`
+}
+
+type MemoryProjectOption struct {
+	ID string `json:"id"`
+}
+
+// MemoryOptionsProvider must apply the same ownership policy as validation.
+// Custom directory adapters opt in explicitly; validator internals are never exposed.
+type MemoryOptionsProvider interface {
+	MemoryOptions(context.Context, security.AccessContext) (MemoryOptions, error)
+}
+
+func (catalog ProjectCatalog) MemoryOptions(ctx context.Context, a security.AccessContext) (MemoryOptions, error) {
+	options := MemoryOptions{Projects: []MemoryProjectOption{}, TaskTypes: []string{"diagnosis", "configuration", "inspection"}}
+	if _, err := catalog.ValidateMatchContext(ctx, a, store.MatchContext{}); err != nil {
+		return options, err
+	}
+	seen := map[string]bool{}
+	for _, p := range catalog {
+		if p.ID == "" || seen[p.ID] {
+			continue
+		}
+		if _, err := catalog.ValidateMatchContext(ctx, a, store.MatchContext{ProjectRef: p.ID}); err == nil {
+			seen[p.ID] = true
+			options.Projects = append(options.Projects, MemoryProjectOption{ID: p.ID})
+		}
+	}
+	sort.Slice(options.Projects, func(i, j int) bool { return options.Projects[i].ID < options.Projects[j].ID })
+	return options, nil
+}
+
+func (h *AgentHandler) GetMemoryOptions(c *gin.Context) {
+	a, ok := h.memoryAccess(c)
+	if !ok {
+		return
+	}
+	v := h.matchValidator
+	if v == nil {
+		v = ProjectCatalog{}
+	}
+	provider, ok := v.(MemoryOptionsProvider)
+	if !ok {
+		c.JSON(http.StatusServiceUnavailable, NewAPIErrorResponse("MEMORY_OPTIONS_UNAVAILABLE", "Memory options unavailable"))
+		return
+	}
+	options, err := provider.MemoryOptions(c.Request.Context(), a)
+	if err != nil {
+		memoryError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, NewSuccessResponse(options))
+}
 
 func (catalog ProjectCatalog) ValidateMatchContext(ctx context.Context, a security.AccessContext, m store.MatchContext) (store.MatchContext, error) {
 	if err := ctx.Err(); err != nil {

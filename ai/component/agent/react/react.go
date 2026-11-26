@@ -80,7 +80,10 @@ var interactionSequence atomic.Uint64
 
 var ErrAgentStopping = errors.New("agent is stopping")
 
-const persistenceTimeout = 30 * time.Second
+// persistenceTimeout bounds each individual persistence write. It is a var
+// rather than a const so tests can shrink the budget and exercise interactions
+// that outlive it without sleeping 30s; production never mutates it.
+var persistenceTimeout = 30 * time.Second
 
 const maxTemplateWarnings = 4096
 
@@ -327,12 +330,14 @@ func (ra *ReActAgent) Interact(parent context.Context, input *schema.UserInput, 
 			return
 		}
 		if ra.messageStore != nil {
+			persistCtx, persistCancel := persistenceContext(ctx)
 			var completeErr error
 			if state.prepared {
-				completeErr = ra.messageStore.CompleteInteraction(state.persistCtx, state.access, sessionID, state.interactionID, state.turnID, interactionState.FinalAnswer)
+				completeErr = ra.messageStore.CompleteInteraction(persistCtx, state.access, sessionID, state.interactionID, state.turnID, interactionState.FinalAnswer)
 			} else {
-				completeErr = ra.messageStore.NextTurnForTurn(state.persistCtx, state.access, sessionID, state.turnID)
+				completeErr = ra.messageStore.NextTurnForTurn(persistCtx, state.access, sessionID, state.turnID)
 			}
+			persistCancel()
 			if completeErr != nil {
 				interactionErr = fmt.Errorf("failed to complete turn: %w", completeErr)
 				chans.ErrorChan <- interactionErr
